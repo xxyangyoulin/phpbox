@@ -1003,6 +1003,9 @@ networks:
         result = docker.up()
 
         if result.success:
+            self.progress_dialog.append_log("等待容器就绪...")
+            if not docker.wait_until_running("php", timeout=30):
+                self.progress_dialog.append_log("⚠ 容器启动超时，服务可能尚未就绪")
             self.progress_dialog.append_log(f"✓ 服务已启动: http://localhost:{self.port_spin.value()}")
             self.progress_dialog.set_finished(True)
             self._created_project_name = self._creating_project_name

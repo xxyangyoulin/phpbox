@@ -16,7 +16,7 @@ from qfluentwidgets import (
 
 from core.docker import DockerManager
 from core.settings import Settings
-from ui.styles import FluentDialog
+from ui.styles import FluentDialog, themed_color
 
 
 class InstallExtWorker(QThread):
@@ -176,15 +176,15 @@ class InstallExtDialog(FluentDialog):
 
         self.log_text = TextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setStyleSheet("""
-            TextEdit {
+        self.log_text.setStyleSheet(f"""
+            TextEdit {{
                 background-color: #1e1e1e;
                 color: #d4d4d4;
                 font-family: 'Consolas', 'Monaco', monospace;
                 font-size: 12px;
-                border: 1px solid #ddd;
+                border: 1px solid {themed_color('#ddd', '#3c3c3c')};
                 border-radius: 4px;
-            }
+            }}
         """)
         layout.addWidget(self.log_text, 1)
 
@@ -299,6 +299,7 @@ class InstallExtDialog(FluentDialog):
         self.progress.setVisible(True)
         self.status_label.setText("正在安装扩展...")
 
+        self._pending_extensions = extensions
         self.worker = InstallExtWorker(self.project_path, extensions, proxy)
         self.worker.progress.connect(self.append_log)
         self.worker.finished.connect(self.on_install_finished)
@@ -316,6 +317,8 @@ class InstallExtDialog(FluentDialog):
             self.append_log(f"=== {msg} ===")
             self.status_label.setStyleSheet("color: #22c55e; font-weight: bold;")
             self.status_label.setText(f"✓ {msg}")
+
+            self._persist_extensions_to_dockerfile()
 
             InfoBar.success(
                 title="安装成功",
@@ -339,6 +342,33 @@ class InstallExtDialog(FluentDialog):
                 duration=-1, # 永不自动关闭，除非手动
                 parent=self
             )
+
+    def _persist_extensions_to_dockerfile(self):
+        """将新安装的扩展追加到 Dockerfile，使重建时保留"""
+        dockerfile = self.project_path / "Dockerfile"
+        if not dockerfile.exists() or not self._pending_extensions:
+            return
+        try:
+            content = dockerfile.read_text()
+            import re
+            # 查找最后一行 RUN install-php-extensions ... 并追加新扩展
+            pattern = r'(RUN install-php-extensions .+)'
+            matches = list(re.finditer(pattern, content))
+            if matches:
+                last_match = matches[-1]
+                existing_exts = last_match.group(1).split()[2:]  # skip "RUN install-php-extensions"
+                new_exts = [e for e in self._pending_extensions if e not in existing_exts]
+                if new_exts:
+                    new_line = last_match.group(1) + " " + " ".join(new_exts)
+                    content = content[:last_match.start()] + new_line + content[last_match.end():]
+                    dockerfile.write_text(content)
+            else:
+                # 没有已有的 install-php-extensions 行，在末尾追加
+                ext_line = f"\nRUN install-php-extensions {' '.join(self._pending_extensions)}\n"
+                content += ext_line
+                dockerfile.write_text(content)
+        except Exception as e:
+            print(f"持久化扩展到 Dockerfile 失败: {e}")
 
     def closeEvent(self, event):
         """关闭事件"""

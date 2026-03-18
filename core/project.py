@@ -1,10 +1,11 @@
 """项目管理核心逻辑"""
 import os
 import re
+import time
 import subprocess
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Set
 from .config import BASE_DIR, ensure_base_dir
 
 
@@ -28,6 +29,8 @@ class ProjectManager:
 
     def __init__(self):
         ensure_base_dir()
+        self._running_containers: Set[str] = set()
+        self._running_containers_ts: float = 0
 
     def get_all_projects(self) -> List[Project]:
         """获取所有项目列表"""
@@ -108,21 +111,29 @@ class ProjectManager:
             pass
         return False
 
-    def _check_running(self, path: Path) -> bool:
-        """检查项目是否在运行"""
+    def _refresh_running_containers(self):
+        """刷新运行中的容器缓存（TTL 2秒）"""
+        now = time.monotonic()
+        if now - self._running_containers_ts < 2:
+            return
         try:
-            project_name = path.name
-            container_name = f"phpdev-{project_name}-php"
             result = subprocess.run(
-                ["docker", "ps", "--filter", f"name={container_name}",
-                 "--filter", "status=running", "-q"],
+                ["docker", "ps", "--filter", "name=phpdev-",
+                 "--format", "{{.Names}}"],
                 capture_output=True,
                 text=True,
-                timeout=3  # 减少超时时间
+                timeout=5
             )
-            return bool(result.stdout.strip())
+            self._running_containers = set(result.stdout.strip().splitlines())
         except Exception:
-            return False
+            self._running_containers = set()
+        self._running_containers_ts = now
+
+    def _check_running(self, path: Path) -> bool:
+        """检查项目是否在运行"""
+        self._refresh_running_containers()
+        container_name = f"phpdev-{path.name}-php"
+        return container_name in self._running_containers
 
     def project_exists(self, name: str) -> bool:
         """检查项目是否存在"""
@@ -200,8 +211,12 @@ class ProjectManager:
 
     def rename_project(self, project: Project, new_name: str) -> bool:
         """重命名项目"""
-        import time
         try:
+            # 校验新名称
+            valid, _ = self.is_valid_name(new_name)
+            if not valid:
+                return False
+
             # 检查新名称是否已存在
             if self.project_exists(new_name):
                 return False
@@ -302,12 +317,10 @@ def get_port_usage(port: int, exclude_project_name: Optional[str] = None) -> Opt
             timeout=5
         )
         for line in result.stdout.splitlines():
-            if f":{port}" in line and not f":{port}0" in line:
-                # 提取进程名
+            m = re.search(r':(\d+)\s', line)
+            if m and int(m.group(1)) == port:
                 match = re.search(r'users:\(\("([^"]+)"', line)
-                if match:
-                    return match.group(1)
-                return "未知进程"
+                return match.group(1) if match else "未知进程"
         return None
     except Exception:
         return None

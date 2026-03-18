@@ -1,4 +1,5 @@
 """Docker 操作模块"""
+import time
 import subprocess
 import os
 from pathlib import Path
@@ -216,3 +217,29 @@ class DockerManager:
             print(f"获取 PHP 配置失败: {e}")
 
         return info
+
+    def wait_until_running(self, service: str = "php", timeout: int = 30) -> bool:
+        """等待容器进入运行状态
+
+        Args:
+            service: 服务名
+            timeout: 超时秒数
+
+        Returns:
+            容器是否已运行
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                result = subprocess.run(
+                    ["docker", "compose", "ps", "--status", "running",
+                     "--format", "{{.Service}}", service],
+                    cwd=str(self.project_path),
+                    capture_output=True, text=True, timeout=5
+                )
+                if service in result.stdout:
+                    return True
+            except Exception:
+                pass
+            time.sleep(1)
+        return False

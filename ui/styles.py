@@ -6,6 +6,12 @@ from qfluentwidgets import setTheme, Theme
 from core.logger import logger
 
 
+def themed_color(light: str, dark: str) -> str:
+    """根据当前主题返回对应颜色"""
+    from qfluentwidgets import isDarkTheme
+    return dark if isDarkTheme() else light
+
+
 def detect_system_theme() -> str:
     """检测系统主题"""
     try:

@@ -1,7 +1,9 @@
 """主窗口"""
 import os
+import shlex
 import subprocess
 import threading
+import time as _time
 import webbrowser
 import functools
 from pathlib import Path
@@ -18,10 +20,10 @@ from PyQt6.QtGui import QIcon, QAction, QPainter, QColor, QBrush, QPen, QFont, Q
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition,
     PushButton, PrimaryPushButton, PillPushButton, TransparentToolButton,
-    BodyLabel, StrongBodyLabel, CaptionLabel, TitleLabel,
-    CardWidget, ScrollArea, FlowLayout,
+    BodyLabel, StrongBodyLabel, CaptionLabel, TitleLabel, ImageLabel,
+    CardWidget, ScrollArea, FlowLayout, HorizontalSeparator,
     FluentIcon as FIF, InfoBar, InfoBarPosition, MessageBox,
-    SystemTrayMenu, Action
+    SystemTrayMenu, Action, RoundMenu, IconWidget
 )
 
 from core.project import ProjectManager, Project, get_port_usage
@@ -34,10 +36,17 @@ from ui.dialogs.config_editor import ConfigEditorDialog
 from ui.dialogs.xdebug_dialog import XdebugDialog
 from ui.dialogs.php_config_dialog import PhpConfigDialog, EDITABLE_CONFIGS
 from ui.dialogs.rename_project_dialog import RenameProjectDialog
+from ui.styles import themed_color
 
+
+_dir_size_cache: dict = {}  # {path: (timestamp, size)}
 
 def get_dir_size(path: Path) -> int:
-    """获取目录大小（字节）"""
+    """获取目录大小（字节），缓存 60 秒"""
+    now = _time.monotonic()
+    cached = _dir_size_cache.get(path)
+    if cached and now - cached[0] < 60:
+        return cached[1]
     total = 0
     try:
         for entry in path.rglob('*'):
@@ -45,6 +54,7 @@ def get_dir_size(path: Path) -> int:
                 total += entry.stat().st_size
     except (PermissionError, OSError):
         pass
+    _dir_size_cache[path] = (now, total)
     return total
 
 
@@ -102,15 +112,15 @@ from qfluentwidgets.common.config import isDarkTheme
 
 
 class ProjectNavigationItem(BaseNavigationPushButton):
-    """自定义项目导航项，使用更大的图标"""
+    """自定义项目导航项，使用更大的图标 + 右侧端口和版本"""
 
     def __init__(self, project, parent=None):
         self.project_name = project.name
         self.project_port = project.port
+        self.project_php_version = project.php_version
         self.is_running = project.is_running
         self.project_color = get_project_color(project.name)
-        text = f"{project.name}  :{project.port}"
-        super().__init__(make_project_icon(project.name, self.is_running), text, True, parent)
+        super().__init__(make_project_icon(project.name, self.is_running), project.name, True, parent)
 
     def set_running_state(self, is_running: bool):
         if self.is_running != is_running:
@@ -159,7 +169,99 @@ class ProjectNavigationItem(BaseNavigationPushButton):
         painter.setFont(font)
         painter.drawText(icon_rect.toRect(), Qt.AlignmentFlag.AlignCenter, letter)
 
+        # 右侧绘制端口和版本（仅在展开时绘制）
+        if not self.isCompacted:
+            right_margin = 12
+            right_x = self.width() - right_margin
+
+            # 端口（右上）
+            port_font = QFont()
+            port_font.setPixelSize(11)
+            port_font.setBold(True)
+            painter.setFont(port_font)
+            port_color = QColor(themed_color('#475569', '#b0bec5'))
+            painter.setPen(QPen(port_color))
+            port_text = f":{self.project_port}"
+            port_w = painter.fontMetrics().horizontalAdvance(port_text)
+            painter.drawText(int(right_x - port_w), 16, port_text)
+
+            # PHP 版本（右下）
+            ver_font = QFont()
+            ver_font.setPixelSize(10)
+            painter.setFont(ver_font)
+            ver_color = QColor(themed_color('#94a3b8', '#64748b'))
+            painter.setPen(QPen(ver_color))
+            ver_text = f"PHP {self.project_php_version}"
+            ver_w = painter.fontMetrics().horizontalAdvance(ver_text)
+            painter.drawText(int(right_x - ver_w), 30, ver_text)
+
         painter.end()
+
+
+class ToolCard(QWidget):
+    clicked = pyqtSignal()
+    def __init__(self, icon: FIF, title: str, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(36)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_style()
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 12, 0)
+        layout.setSpacing(6)
+
+        self.icon_widget = IconWidget(icon)
+        self.icon_widget.setFixedSize(18, 18)
+
+        self.label = CaptionLabel(title)
+        self.label.setStyleSheet(f"color: {themed_color('#475569', '#b0bec5')}; font-weight: 500;")
+
+        layout.addWidget(self.icon_widget)
+        layout.addWidget(self.label)
+
+    def _update_style(self):
+        hover_bg = themed_color('rgba(100, 116, 139, 0.1)', 'rgba(180, 200, 220, 0.1)')
+        self.setStyleSheet(f"""
+            ToolCard {{
+                background-color: transparent;
+                border: 1px solid transparent;
+                border-radius: 6px;
+            }}
+            ToolCard:hover {{
+                background-color: {hover_bg};
+            }}
+        """)
+
+    def setEnabled(self, enabled: bool):
+        super().setEnabled(enabled)
+        opacity = 1.0 if enabled else 0.4
+        self.icon_widget.setEnabled(enabled)
+        self.label.setStyleSheet(
+            f"color: {themed_color('#475569', '#b0bec5')}; font-weight: 500;"
+            if enabled else
+            f"color: {themed_color('#c0c0c0', '#555555')}; font-weight: 500;"
+        )
+        self.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ForbiddenCursor)
+
+    def mousePressEvent(self, e):
+        if not self.isEnabled():
+            return
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            press_bg = themed_color('rgba(100, 116, 139, 0.15)', 'rgba(180, 200, 220, 0.15)')
+            self.setStyleSheet(f"""
+                ToolCard {{
+                    background-color: {press_bg};
+                    border: 1px solid transparent;
+                    border-radius: 6px;
+                }}
+            """)
+
+    def mouseReleaseEvent(self, e):
+        if not self.isEnabled():
+            return
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._update_style()
 
 
 class ModernDashboardWidget(ScrollArea):
@@ -229,68 +331,53 @@ class ModernDashboardWidget(ScrollArea):
         self.name_label = TitleLabel("...")
         self.status_badge = BodyLabel("未知")
         self.status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_badge.setFixedSize(72, 26)
+        self.status_badge.setFixedSize(80, 28)
         title_status_layout.addWidget(self.name_label)
         title_status_layout.addWidget(self.status_badge)
         title_status_layout.addStretch(1)
         info_layout.addLayout(title_status_layout)
 
-        # 路径
+        # 路径（点击复制）
         self.path_label = CaptionLabel("...")
-        self.path_label.setStyleSheet("color: #64748b; font-family: Consolas, monospace;")
+        self.path_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')}; font-family: Consolas, monospace;")
+        self.path_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.path_label.setToolTip("点击复制路径")
+        self.path_label.mousePressEvent = self._copy_path
         info_layout.addWidget(self.path_label)
 
-        # 统计数据行
-        stats_layout = QHBoxLayout()
-        stats_layout.setSpacing(32)
-
-        def create_stat_item(label_text):
-            item_layout = QVBoxLayout()
-            item_layout.setSpacing(4)
-            lbl = CaptionLabel(label_text)
-            lbl.setStyleSheet("color: #64748b;")
-            val = BodyLabel("...")
-            val.setStyleSheet("font-weight: 500;")
-            item_layout.addWidget(lbl)
-            item_layout.addWidget(val)
-            return item_layout, val
-
-        php_layout, self.stat_php_val = create_stat_item("PHP 版本")
-        port_layout, self.stat_port_val = create_stat_item("端口")
-        dir_layout, self.stat_dir_val = create_stat_item("目录大小")
-        log_layout, self.stat_log_val = create_stat_item("日志大小")
-
-        stats_layout.addLayout(php_layout)
-        stats_layout.addLayout(port_layout)
-        stats_layout.addLayout(dir_layout)
-        stats_layout.addLayout(log_layout)
-        stats_layout.addStretch(1)
-
-        info_layout.addLayout(stats_layout)
+        # 统计信息内联文字
+        self.stats_line = CaptionLabel("...")
+        self.stats_line.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
+        info_layout.addWidget(self.stats_line)
         top_main_layout.addLayout(info_layout, 1)
 
         # 顶部操作按钮 (停止/重启/编辑/删除)
         top_actions_layout = QHBoxLayout()
         top_actions_layout.setSpacing(8)
 
-        self.toggle_btn = PillPushButton(FIF.PLAY, "启动")
+        self.toggle_btn = PrimaryPushButton(FIF.PLAY, "启动")
         self.toggle_btn.setMinimumHeight(32)
         self.toggle_btn.setCheckable(False)
-        self.restart_btn = PillPushButton(FIF.SYNC, "重启")
+        self.restart_btn = PushButton(FIF.SYNC, "重启")
         self.restart_btn.setMinimumHeight(32)
         self.restart_btn.setCheckable(False)
         
-        self.rename_btn = TransparentToolButton(FIF.EDIT)
-        self.rename_btn.setToolTip("项目设置")
-        self.rename_btn.setFixedSize(32, 32)
-        self.delete_btn = TransparentToolButton(FIF.DELETE)
-        self.delete_btn.setToolTip("删除项目")
-        self.delete_btn.setFixedSize(32, 32)
+        # 更多操作按钮 (重命名、删除被收纳至此)
+        self.more_btn = TransparentToolButton(FIF.MORE)
+        self.more_btn.setFixedSize(32, 32)
+
+        self.more_menu = RoundMenu(parent=self.more_btn)
+        self.rename_action = Action(FIF.EDIT, "项目设置")
+        self.delete_action = Action(FIF.DELETE, "删除项目")
+        self.more_menu.addAction(self.rename_action)
+        self.more_menu.addAction(self.delete_action)
+        self.more_btn.clicked.connect(
+            lambda: self.more_menu.exec(self.more_btn.mapToGlobal(self.more_btn.rect().bottomLeft()))
+        )
 
         top_actions_layout.addWidget(self.toggle_btn)
         top_actions_layout.addWidget(self.restart_btn)
-        top_actions_layout.addWidget(self.rename_btn)
-        top_actions_layout.addWidget(self.delete_btn)
+        top_actions_layout.addWidget(self.more_btn)
 
         top_main_layout.addLayout(top_actions_layout, 0)
         top_main_layout.setAlignment(top_actions_layout, Qt.AlignmentFlag.AlignTop)
@@ -301,19 +388,19 @@ class ModernDashboardWidget(ScrollArea):
         action_bar_layout = QHBoxLayout()
         action_bar_layout.setSpacing(12)
 
-        self.browser_btn = PillPushButton(FIF.GLOBE, "打开浏览器")
-        self.browser_btn.setCheckable(False)
-        self.log_btn_header = PillPushButton(FIF.DOCUMENT, "查看日志")
+        self.log_btn_header = PrimaryPushButton(FIF.DOCUMENT, "查看日志")
         self.log_btn_header.setCheckable(False)
-        self.folder_btn_header = PillPushButton(FIF.FOLDER, "打开目录")
+        self.folder_btn_header = PushButton(FIF.FOLDER, "打开目录")
         self.folder_btn_header.setCheckable(False)
+        self.browser_btn = PushButton(FIF.GLOBE, "打开浏览器")
+        self.browser_btn.setCheckable(False)
 
-        for btn in [self.browser_btn, self.log_btn_header, self.folder_btn_header]:
+        for btn in [self.log_btn_header, self.folder_btn_header, self.browser_btn]:
             btn.setMinimumHeight(32)
 
-        action_bar_layout.addWidget(self.browser_btn)
         action_bar_layout.addWidget(self.log_btn_header)
         action_bar_layout.addWidget(self.folder_btn_header)
+        action_bar_layout.addWidget(self.browser_btn)
         action_bar_layout.addStretch(1)
 
         h_layout.addLayout(action_bar_layout)
@@ -334,35 +421,40 @@ class ModernDashboardWidget(ScrollArea):
         tools_content_layout.setSpacing(16)
 
         # 工具组
-        self.terminal_btn = PillPushButton(FIF.COMMAND_PROMPT, "进入终端")
-        self.docker_btn = PillPushButton(FIF.CODE, "进入容器")
-        self.config_btn = PillPushButton(FIF.SETTING, "编辑配置")
-        self.alias_btn = PillPushButton(FIF.COPY, "复制 alias")
+        self.terminal_btn = ToolCard(FIF.COMMAND_PROMPT, "进入终端")
+        self.docker_btn = ToolCard(FIF.CODE, "进入容器")
+        self.config_btn = ToolCard(FIF.SETTING, "编辑配置")
+        self.alias_btn = ToolCard(FIF.COPY, "复制 alias")
         
-        self.composer_install_btn = PillPushButton(FIF.DOWNLOAD, "Composer Install")
-        self.composer_update_btn = PillPushButton(FIF.SYNC, "Composer Update")
-        self.composer_require_btn = PillPushButton(FIF.ADD, "Composer Require")
-        self.install_ext_btn = PillPushButton(FIF.APPLICATION, "安装扩展")
+        self.composer_install_btn = ToolCard(FIF.DOWNLOAD, "安装依赖")
+        self.composer_update_btn = ToolCard(FIF.SYNC, "更新依赖")
+        self.composer_require_btn = ToolCard(FIF.ADD, "添加依赖")
+        self.install_ext_btn = ToolCard(FIF.APPLICATION, "安装扩展")
         
-        self.xdebug_btn = PillPushButton(FIF.DEVELOPER_TOOLS, "Xdebug 配置")
-        self.code_log_btn = PillPushButton(FIF.DOCUMENT, "代码日志")
-        self.clear_logs_btn = PillPushButton(FIF.DELETE, "清理日志")
+        self.xdebug_btn = ToolCard(FIF.DEVELOPER_TOOLS, "Xdebug")
+        self.code_log_btn = ToolCard(FIF.DOCUMENT, "Runtime 日志")
+        self.clear_logs_btn = ToolCard(FIF.DELETE, "清理日志")
+
+        # 需要容器运行才可用的按钮
+        self._running_required_btns = [
+            self.docker_btn, self.install_ext_btn, self.xdebug_btn,
+            self.clear_logs_btn, self.composer_install_btn,
+            self.composer_update_btn, self.composer_require_btn,
+        ]
 
         def create_tool_group(title, buttons):
             group_layout = QVBoxLayout()
             group_layout.setContentsMargins(0, 0, 0, 0)
             group_layout.setSpacing(8)
             lbl = CaptionLabel(title)
-            lbl.setStyleSheet("color: #64748b; font-weight: 500;")
+            lbl.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')}; font-weight: 500;")
             
             wrapper = QWidget()
             btn_layout = FlowLayout(wrapper, isTight=True)
-            btn_layout.setSpacing(8)
+            btn_layout.setSpacing(12)
             btn_layout.setContentsMargins(0, 0, 0, 0)
             
             for btn in buttons:
-                btn.setMinimumHeight(34)
-                btn.setCheckable(False)
                 btn_layout.addWidget(btn)
                 
             group_layout.addWidget(lbl)
@@ -374,7 +466,9 @@ class ModernDashboardWidget(ScrollArea):
         debug_group = create_tool_group("调试与日志", [self.xdebug_btn, self.code_log_btn, self.clear_logs_btn])
 
         tools_content_layout.addLayout(env_group)
+        tools_content_layout.addWidget(HorizontalSeparator())
         tools_content_layout.addLayout(deps_group)
+        tools_content_layout.addWidget(HorizontalSeparator())
         tools_content_layout.addLayout(debug_group)
 
         tools_layout.addLayout(tools_content_layout)
@@ -396,12 +490,11 @@ class ModernDashboardWidget(ScrollArea):
         config_header.addWidget(self.config_refresh_btn)
         config_layout.addLayout(config_header)
 
-        # 配置网格
+        # 配置网格（2 列）
         self.config_grid = QGridLayout()
         self.config_grid.setSpacing(16)
         self.config_grid.setColumnStretch(1, 1)
         self.config_grid.setColumnStretch(3, 1)
-        self.config_grid.setColumnStretch(5, 1)
 
         # 配置项标签（初始化为空，等待更新）
         self.config_labels = {}
@@ -416,40 +509,67 @@ class ModernDashboardWidget(ScrollArea):
             ("display_errors", "显示错误"),
             ("error_reporting", "错误报告"),
             ("date.timezone", "时区"),
-            ("xdebug_status", "Xdebug"),
-            ("opcache_status", "OPCache"),
         ]
 
         for i, (key, label) in enumerate(config_items):
-            row = i // 3
-            col = (i % 3) * 2
+            row = i // 2
+            col = (i % 2) * 2
             name_label = CaptionLabel(f"{label}:")
-            name_label.setStyleSheet("color: #64748b;")
-            name_label.setToolTip(key)  # 显示配置项名称
+            name_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
+            name_label.setToolTip(key)
             value_label = CaptionLabel("--")
 
-            # 可编辑配置项添加点击样式
             if key in EDITABLE_CONFIGS:
-                value_label.setStyleSheet(
-                    "font-weight: bold; color: #3b82f6; text-decoration: underline;"
-                )
-                value_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-                # 绑定点击事件
-                value_label.mousePressEvent = self._create_config_click_handler(key)
+                value_container = QWidget()
+                val_layout = QHBoxLayout(value_container)
+                val_layout.setContentsMargins(0, 0, 0, 0)
+                val_layout.setSpacing(6)
+
+                value_label.setStyleSheet("font-weight: bold;")
+                edit_icon = IconWidget(FIF.EDIT)
+                edit_icon.setFixedSize(14, 14)
+
+                op = QGraphicsOpacityEffect(edit_icon)
+                op.setOpacity(0.5)
+                edit_icon.setGraphicsEffect(op)
+
+                val_layout.addWidget(value_label)
+                val_layout.addWidget(edit_icon)
+                val_layout.addStretch(1)
+
+                value_container.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                value_container.mousePressEvent = self._create_config_click_handler(key)
+
+                grid_widget = value_container
             else:
                 value_label.setStyleSheet("font-weight: bold;")
+                grid_widget = value_label
 
             self.config_grid.addWidget(name_label, row, col)
-            self.config_grid.addWidget(value_label, row, col + 1)
+            self.config_grid.addWidget(grid_widget, row, col + 1)
             self.config_labels[key] = value_label
 
         config_layout.addLayout(self.config_grid)
+
+        # Xdebug / OPCache 状态行
+        status_row = QHBoxLayout()
+        status_row.setSpacing(24)
+        for key, label_text in [("xdebug_status", "Xdebug"), ("opcache_status", "OPCache")]:
+            name_lbl = CaptionLabel(f"{label_text}:")
+            name_lbl.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
+            val_lbl = CaptionLabel("--")
+            val_lbl.setStyleSheet("font-weight: bold;")
+            self.config_labels[key] = val_lbl
+            status_row.addWidget(name_lbl)
+            status_row.addWidget(val_lbl)
+        status_row.addStretch(1)
+        config_layout.addLayout(status_row)
 
         # 已安装扩展
         ext_header = QHBoxLayout()
         ext_header.addWidget(BodyLabel("已安装扩展"))
         self.ext_count_label = CaptionLabel("0 个")
-        self.ext_count_label.setStyleSheet("color: #64748b;")
+        self.ext_count_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
         ext_header.addStretch()
         ext_header.addWidget(self.ext_count_label)
         config_layout.addLayout(ext_header)
@@ -464,6 +584,20 @@ class ModernDashboardWidget(ScrollArea):
         layout.addWidget(self.config_card)
 
         layout.addStretch(1)
+
+    def _copy_path(self, event):
+        """点击复制项目路径"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            path = self.path_label.text()
+            if path and path != "...":
+                QApplication.clipboard().setText(path)
+                InfoBar.success(
+                    title="已复制",
+                    content=path,
+                    orient=Qt.Orientation.Horizontal,
+                    duration=2000,
+                    parent=self
+                )
 
     def _create_config_click_handler(self, config_key: str):
         """创建配置项点击处理器"""
@@ -496,22 +630,22 @@ class ModernDashboardWidget(ScrollArea):
         logs_path = project_path / "logs"
         logs_size = get_dir_size(logs_path) if logs_path.exists() else 0
 
-        self.stat_php_val.setText(project.php_version)
-        self.stat_port_val.setText(str(project.port))
-        self.stat_dir_val.setText(format_size(total_size))
-        self.stat_log_val.setText(format_size(logs_size))
+        self.stats_line.setText(
+            f"PHP {project.php_version}  ·  :{project.port}  ·  {format_size(total_size)}  ·  日志 {format_size(logs_size)}"
+        )
+        self.stats_line.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
         self.path_label.setText(str(project.path))
 
         if loading:
             self.status_badge.setText("刷新中...")
             self.status_badge.setStyleSheet(
-                "background-color: #f59e0b; color: white; border-radius: 13px; font-weight: bold;"
+                "background-color: #f59e0b; color: white; border-radius: 14px; font-weight: bold;"
             )
             self.toggle_btn.setEnabled(False)
         elif project.is_running:
             self.status_badge.setText("运行中")
             self.status_badge.setStyleSheet(
-                "background-color: #22c55e; color: white; border-radius: 13px; font-weight: bold;"
+                "background-color: #22c55e; color: white; border-radius: 14px; font-weight: bold;"
             )
             self.toggle_btn.setText("停止")
             self.toggle_btn.setIcon(FIF.PAUSE)
@@ -519,15 +653,18 @@ class ModernDashboardWidget(ScrollArea):
         else:
             self.status_badge.setText("已停止")
             self.status_badge.setStyleSheet(
-                "background-color: #94a3b8; color: white; border-radius: 13px; font-weight: bold;"
+                "background-color: #94a3b8; color: white; border-radius: 14px; font-weight: bold;"
             )
             self.toggle_btn.setText("启动")
             self.toggle_btn.setIcon(FIF.PLAY)
             self.toggle_btn.setEnabled(True)
 
-        # 项目未运行时，配置卡片显示提示
+        # 项目未运行时，配置卡片显示提示，并禁用需要容器的按钮
         if not project.is_running:
             self._clear_php_info()
+        for btn in self._running_required_btns:
+            btn.setEnabled(project.is_running)
+            btn.setToolTip("" if project.is_running else "需要先启动项目")
 
         # 触发淡入动画（仅在切换项目时）
         if animate:
@@ -538,11 +675,9 @@ class ModernDashboardWidget(ScrollArea):
         self._config_current_values = {}
         for key, label in self.config_labels.items():
             label.setText("--")
-            # 可编辑项恢复蓝色样式
+            # 可编辑项恢复样式
             if key in EDITABLE_CONFIGS:
-                label.setStyleSheet(
-                    "font-weight: bold; color: #3b82f6; text-decoration: underline;"
-                )
+                label.setStyleSheet("font-weight: bold;")
         self.ext_count_label.setText("0 个")
         # 清空扩展标签
         while self.ext_layout.count():
@@ -563,35 +698,13 @@ class ModernDashboardWidget(ScrollArea):
         # 存储当前配置值
         self._config_current_values = info.copy()
 
-        # 更新配置项（可编辑项保持蓝色下划线样式）
-        editable_style = "font-weight: bold; color: #3b82f6; text-decoration: underline;"
-
-        self.config_labels["memory_limit"].setText(info.get("memory_limit", "--"))
-        self.config_labels["memory_limit"].setStyleSheet(editable_style)
-
-        self.config_labels["max_execution_time"].setText(info.get("max_execution_time", "--"))
-        self.config_labels["max_execution_time"].setStyleSheet(editable_style)
-
-        self.config_labels["max_input_time"].setText(info.get("max_input_time", "--"))
-        self.config_labels["max_input_time"].setStyleSheet(editable_style)
-
-        self.config_labels["upload_max_filesize"].setText(info.get("upload_max_filesize", "--"))
-        self.config_labels["upload_max_filesize"].setStyleSheet(editable_style)
-
-        self.config_labels["post_max_size"].setText(info.get("post_max_size", "--"))
-        self.config_labels["post_max_size"].setStyleSheet(editable_style)
-
-        self.config_labels["max_file_uploads"].setText(info.get("max_file_uploads", "--"))
-        self.config_labels["max_file_uploads"].setStyleSheet(editable_style)
-
-        self.config_labels["display_errors"].setText(info.get("display_errors", "--"))
-        self.config_labels["display_errors"].setStyleSheet(editable_style)
-
-        self.config_labels["error_reporting"].setText(info.get("error_reporting", "--"))
-        self.config_labels["error_reporting"].setStyleSheet(editable_style)
-
-        self.config_labels["date.timezone"].setText(info.get("date.timezone", "--"))
-        self.config_labels["date.timezone"].setStyleSheet(editable_style)
+        # 更新配置项
+        editable_style = "font-weight: bold;"
+        for key in ["memory_limit", "max_execution_time", "max_input_time",
+                     "upload_max_filesize", "post_max_size", "max_file_uploads",
+                     "display_errors", "error_reporting", "date.timezone"]:
+            self.config_labels[key].setText(info.get(key, "--"))
+            self.config_labels[key].setStyleSheet(editable_style)
 
         # Xdebug 状态
         xdebug_enabled = info.get("xdebug_enabled", False)
@@ -629,12 +742,14 @@ class ModernDashboardWidget(ScrollArea):
             label.setFixedHeight(22)
             if ext.lower() in important_exts or ext.lower().replace("_", "") in important_exts:
                 label.setStyleSheet(
-                    "background-color: #dbeafe; color: #1d4ed8; "
+                    f"background-color: {themed_color('#dbeafe', 'rgba(59,130,246,0.15)')}; "
+                    f"color: {themed_color('#1d4ed8', '#60a5fa')}; "
                     "border-radius: 4px; padding: 2px 8px; font-weight: bold;"
                 )
             else:
                 label.setStyleSheet(
-                    "background-color: #f1f5f9; color: #475569; "
+                    f"background-color: {themed_color('#f1f5f9', 'rgba(148,163,184,0.12)')}; "
+                    f"color: {themed_color('#475569', '#94a3b8')}; "
                     "border-radius: 4px; padding: 2px 8px;"
                 )
             self.ext_layout.addWidget(label)
@@ -660,13 +775,37 @@ class ProjectDashboardPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 空状态提示
-        self.empty_hint = BodyLabel(
-            "← 从左侧选择一个项目\n\n还没有项目？点击底部「新建项目」创建第一个 PHP 开发环境"
-        )
-        self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty_hint.setWordWrap(True)
-        layout.addWidget(self.empty_hint, 1)
+        # 空状态提示容器
+        self.empty_container = QWidget()
+        empty_layout = QVBoxLayout(self.empty_container)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.setSpacing(16)
+        
+        # 使用图标替代插画
+        empty_icon = IconWidget(FIF.IOT)
+        empty_icon.setFixedSize(72, 72)
+        
+        # 淡色装饰
+        op = QGraphicsOpacityEffect(empty_icon)
+        op.setOpacity(0.3)
+        empty_icon.setGraphicsEffect(op)
+        
+        empty_text = TitleLabel("尚未选择项目")
+        empty_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_text.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')}; font-weight: bold;")
+
+        empty_desc = BodyLabel("← 请从左侧边栏选择环境加载详细面板")
+        empty_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_desc.setStyleSheet(f"color: {themed_color('#94a3b8', '#64748b')};")
+        
+        empty_layout.addStretch(1)
+        empty_layout.addWidget(empty_icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty_layout.addSpacing(8)
+        empty_layout.addWidget(empty_text, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty_layout.addWidget(empty_desc, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty_layout.addStretch(1)
+        
+        layout.addWidget(self.empty_container, 1)
 
         # 仪表盘
         self.dashboard = ModernDashboardWidget()
@@ -679,7 +818,7 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.log_btn_header.clicked.connect(self.view_logs)
         self.dashboard.terminal_btn.clicked.connect(self.open_terminal)
         self.dashboard.docker_btn.clicked.connect(self.open_docker_terminal)
-        self.dashboard.delete_btn.clicked.connect(self.delete_project)
+        self.dashboard.delete_action.triggered.connect(self.delete_project)
         self.dashboard.folder_btn_header.clicked.connect(self.open_folder)
         self.dashboard.alias_btn.clicked.connect(self.copy_alias)
         self.dashboard.xdebug_btn.clicked.connect(self.configure_xdebug)
@@ -690,14 +829,14 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.composer_require_btn.clicked.connect(self.composer_require)
         self.dashboard.clear_logs_btn.clicked.connect(self.clear_logs)
         self.dashboard.code_log_btn.clicked.connect(self.open_code_log_terminal)
-        self.dashboard.rename_btn.clicked.connect(self.rename_project)
+        self.dashboard.rename_action.triggered.connect(self.rename_project)
         layout.addWidget(self.dashboard, 1)
 
         self.show_project_view(False)
 
     def show_project_view(self, show: bool):
         self.dashboard.setVisible(show)
-        self.empty_hint.setVisible(not show)
+        self.empty_container.setVisible(not show)
 
     def show_project(self, project: Project, loading: bool = False):
         """显示项目
@@ -727,6 +866,9 @@ class ProjectDashboardPage(QWidget):
                     main_win = self.window()
                     if hasattr(main_win, 'update_sidebar_item_state'):
                         main_win.update_sidebar_item_state(p.name, p.is_running)
+                    # 项目运行中时刷新 PHP 配置
+                    if p.is_running:
+                        QTimer.singleShot(100, self._refresh_php_info)
                     break
 
     # ---- 项目操作 ----
@@ -769,72 +911,49 @@ class ProjectDashboardPage(QWidget):
 
         # 启动服务
         result = DockerManager(path).up()
-        QTimer.singleShot(0, functools.partial(self._on_docker_up_result, result, name))
+        QTimer.singleShot(0, functools.partial(self._on_docker_operation_result, result, name, "up"))
 
-    def _async_docker_up(self, path: str, name: str):
-        """异步执行 docker up"""
-        result = DockerManager(path).up()
-        # 使用 QTimer 在主线程中更新 UI
-        callback = functools.partial(self._on_docker_up_result, result, name)
-        QTimer.singleShot(0, callback)
+    # 操作名 -> (成功标题, 成功动词, 失败标题)
+    _OP_LABELS = {
+        "up":      ("服务启动", "已启动", "启动失败"),
+        "stop":    ("服务停止", "已停止", "停止失败"),
+        "restart": ("服务重启", "已重启", "重启失败"),
+    }
 
-    def _on_docker_up_result(self, result, name: str):
-        """docker up 结果回调"""
+    def _async_docker_operation(self, path: str, name: str, operation: str):
+        """异步执行 docker 操作（up/stop/restart）"""
+        result = getattr(DockerManager(path), operation)()
+        QTimer.singleShot(0, functools.partial(
+            self._on_docker_operation_result, result, name, operation))
+
+    def _on_docker_operation_result(self, result, name: str, operation: str):
+        """docker 操作结果回调"""
+        ok_title, ok_verb, fail_title = self._OP_LABELS[operation]
         if result.success:
-            self._notify("服务启动", f"{name} 已启动", "success")
+            self._notify(ok_title, f"{name} {ok_verb}", "success")
             QTimer.singleShot(500, self._reload_current)
         else:
-            self._notify("启动失败", str(result.error), "error")
+            self._notify(fail_title, str(result.error), "error")
 
     def stop_project(self):
         if not self.current_project:
             return
-        # 异步停止
         project = self.current_project
         threading.Thread(
-            target=self._async_docker_stop,
-            args=(project.path, project.name),
+            target=self._async_docker_operation,
+            args=(project.path, project.name, "stop"),
             daemon=True
         ).start()
-
-    def _async_docker_stop(self, path: str, name: str):
-        """异步执行 docker stop"""
-        result = DockerManager(path).stop()
-        callback = functools.partial(self._on_docker_stop_result, result, name)
-        QTimer.singleShot(0, callback)
-
-    def _on_docker_stop_result(self, result, name: str):
-        """docker stop 结果回调"""
-        if result.success:
-            self._notify("服务停止", f"{name} 已停止", "success")
-            QTimer.singleShot(500, self._reload_current)
-        else:
-            self._notify("停止失败", str(result.error), "error")
 
     def restart_project(self):
         if not self.current_project:
             return
-        # 异步重启
         project = self.current_project
         threading.Thread(
-            target=self._async_docker_restart,
-            args=(project.path, project.name),
+            target=self._async_docker_operation,
+            args=(project.path, project.name, "restart"),
             daemon=True
         ).start()
-
-    def _async_docker_restart(self, path: str, name: str):
-        """异步执行 docker restart"""
-        result = DockerManager(path).restart()
-        callback = functools.partial(self._on_docker_restart_result, result, name)
-        QTimer.singleShot(0, callback)
-
-    def _on_docker_restart_result(self, result, name: str):
-        """docker restart 结果回调"""
-        if result.success:
-            self._notify("服务重启", f"{name} 已重启", "success")
-            QTimer.singleShot(500, self._reload_current)
-        else:
-            self._notify("重启失败", str(result.error), "error")
 
     def _reload_current(self):
         """异步刷新当前项目状态"""
@@ -867,7 +986,7 @@ class ProjectDashboardPage(QWidget):
         terminal = os.environ.get("TERMINAL") or "x-terminal-emulator"
 
         self._launch_terminal([
-            [terminal, "-e", "sh", "-c", f"cd '{p}' && exec $SHELL"],
+            [terminal, "-e", "sh", "-c", f"cd {shlex.quote(p)} && exec $SHELL"],
             ["deepin-terminal", "--work-directory", p],
             ["kitty", "--directory", p],
             ["alacritty", "--working-directory", p],
@@ -892,7 +1011,7 @@ class ProjectDashboardPage(QWidget):
             return
         p = str(self.current_project.path)
         # 使用 zsh 进入容器
-        cmd = f"cd '{p}' && docker compose exec php zsh"
+        cmd = f"cd {shlex.quote(p)} && docker compose exec php zsh"
         self._launch_terminal([
             ["deepin-terminal", "-C", cmd],
             ["kitty", "--directory", p, "docker", "compose", "exec", "php", "zsh"],
@@ -1390,7 +1509,7 @@ class MainWindow(FluentWindow):
         # 定时刷新
         self.refresh_timer = QTimer()
         self.refresh_timer.timeout.connect(self._auto_refresh)
-        self.refresh_timer.start(5000)
+        self.refresh_timer.start(10000)
 
         # 初始加载
         self.load_projects()
@@ -1607,27 +1726,22 @@ class MainWindow(FluentWindow):
 
         # 异步启动所有项目
         threading.Thread(
-            target=self._async_start_all,
-            args=(to_start,),
+            target=self._async_batch_operation,
+            args=(to_start, "up"),
             daemon=True
         ).start()
 
-    def _async_start_all(self, projects: list):
-        """异步启动多个项目"""
+    def _async_batch_operation(self, projects: list, operation: str):
+        """异步批量执行 docker 操作"""
         success_count = 0
         for project in projects:
-            result = DockerManager(project.path).up()
+            result = getattr(DockerManager(project.path), operation)()
             if result.success:
                 success_count += 1
-        # 回到主线程更新 UI
-        callback = functools.partial(self._on_start_all_result, success_count)
-        QTimer.singleShot(0, callback)
-
-    def _on_start_all_result(self, success_count: int):
-        """批量启动结果回调"""
-        if success_count > 0:
-            self._notify("批量启动", f"已启动 {success_count} 个项目")
-            QTimer.singleShot(500, self._refresh_all_projects)
+        ok_title, ok_verb, _ = ProjectDashboardPage._OP_LABELS[operation]
+        label = "批量启动" if operation == "up" else "批量停止"
+        QTimer.singleShot(0, functools.partial(
+            self._on_batch_operation_result, success_count, label))
 
     def stop_all_projects(self):
         """停止所有正在运行的项目"""
@@ -1645,26 +1759,16 @@ class MainWindow(FluentWindow):
 
         # 异步停止所有项目
         threading.Thread(
-            target=self._async_stop_all,
-            args=(running_projects,),
+            target=self._async_batch_operation,
+            args=(running_projects, "stop"),
             daemon=True
         ).start()
 
-    def _async_stop_all(self, projects: list):
-        """异步停止多个项目"""
-        success_count = 0
-        for project in projects:
-            result = DockerManager(project.path).stop()
-            if result.success:
-                success_count += 1
-        # 回到主线程更新 UI
-        callback = functools.partial(self._on_stop_all_result, success_count)
-        QTimer.singleShot(0, callback)
-
-    def _on_stop_all_result(self, success_count: int):
-        """批量停止结果回调"""
+    def _on_batch_operation_result(self, success_count: int, label: str):
+        """批量操作结果回调"""
         if success_count > 0:
-            self._notify("批量停止", f"已停止 {success_count} 个项目")
+            verb = "启动" if "启动" in label else "停止"
+            self._notify(label, f"已{verb} {success_count} 个项目")
             QTimer.singleShot(500, self._refresh_all_projects)
 
     def _refresh_all_projects(self):

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """PHP 开发环境管理器 - 程序入口"""
 import sys
+import subprocess
 import argparse
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtCore import Qt, QSettings
 from ui.main_window import MainWindow
 from ui.styles import apply_theme, ThemeWatcher
@@ -54,6 +55,19 @@ def main():
 
     # 应用 Fluent 主题
     apply_theme(app, theme)
+
+    # 检查 Docker 是否可用
+    try:
+        subprocess.run(
+            ["docker", "info"],
+            capture_output=True, timeout=10, check=True
+        )
+    except Exception:
+        QMessageBox.critical(
+            None, "Docker 未就绪",
+            "无法连接到 Docker 守护进程。\n请确认 Docker 已安装并正在运行。"
+        )
+        sys.exit(1)
 
     window = MainWindow()
 
