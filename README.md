@@ -5,6 +5,8 @@ PHP Docker 开发环境管理器 —— 图形化管理 PHP 容器环境
 ![Python](https://img.shields.io/badge/python-3.8+-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+![Screenshot](screenshot.png)
+
 ## 特性
 
 - PHP **7.2 - 8.4** 多版本支持
