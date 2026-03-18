@@ -647,7 +647,7 @@ class CreateProjectDialog(FluentDialog):
             "",
             "# 创建用户 (与宿主机 UID/GID 一致)",
             "RUN groupadd -g ${USER_GID} user && \\",
-            "    useradd -m -u ${USER_UID} -g ${USER_GID} -s /bin/bash user && \\",
+            "    useradd -m -u ${USER_UID} -g ${USER_GID} -s /bin/zsh user && \\",
             "    echo 'user ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers",
             "",
             "# 设置用户环境变量",

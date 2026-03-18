@@ -291,6 +291,12 @@ class ModernDashboardWidget(ScrollArea):
         self.xdebug_btn.setCheckable(False)
         self.alias_btn = PillPushButton("复制 alias")
         self.alias_btn.setCheckable(False)
+        self.clear_logs_btn = PillPushButton("清理日志")
+        self.clear_logs_btn.setCheckable(False)
+        self.clear_logs_btn.setToolTip("清空 Nginx 和 PHP-FPM 日志文件")
+        self.code_log_btn = PillPushButton("代码日志")
+        self.code_log_btn.setCheckable(False)
+        self.code_log_btn.setToolTip("查看 src/runtime 目录下的日志文件")
 
         # Composer 快捷按钮
         self.composer_install_btn = PillPushButton("Composer Install")
@@ -305,6 +311,7 @@ class ModernDashboardWidget(ScrollArea):
 
         for btn in [self.terminal_btn, self.docker_btn, self.config_btn,
                     self.install_ext_btn, self.xdebug_btn, self.alias_btn,
+                    self.clear_logs_btn, self.code_log_btn,
                     self.composer_install_btn, self.composer_update_btn, self.composer_require_btn]:
             btn.setMinimumHeight(38)
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -312,12 +319,14 @@ class ModernDashboardWidget(ScrollArea):
         tools_grid.addWidget(self.terminal_btn, 0, 0)
         tools_grid.addWidget(self.docker_btn, 0, 1)
         tools_grid.addWidget(self.config_btn, 0, 2)
-        tools_grid.addWidget(self.install_ext_btn, 1, 0)
-        tools_grid.addWidget(self.xdebug_btn, 1, 1)
-        tools_grid.addWidget(self.alias_btn, 1, 2)
-        tools_grid.addWidget(self.composer_install_btn, 2, 0)
-        tools_grid.addWidget(self.composer_update_btn, 2, 1)
-        tools_grid.addWidget(self.composer_require_btn, 2, 2)
+        tools_grid.addWidget(self.code_log_btn, 1, 0)
+        tools_grid.addWidget(self.install_ext_btn, 1, 1)
+        tools_grid.addWidget(self.xdebug_btn, 1, 2)
+        tools_grid.addWidget(self.alias_btn, 2, 0)
+        tools_grid.addWidget(self.clear_logs_btn, 2, 1)
+        tools_grid.addWidget(self.composer_install_btn, 2, 2)
+        tools_grid.addWidget(self.composer_update_btn, 3, 0)
+        tools_grid.addWidget(self.composer_require_btn, 3, 1)
         tools_layout.addLayout(tools_grid)
         layout.addWidget(self.tools_card)
 
@@ -626,6 +635,8 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.composer_install_btn.clicked.connect(self.composer_install)
         self.dashboard.composer_update_btn.clicked.connect(self.composer_update)
         self.dashboard.composer_require_btn.clicked.connect(self.composer_require)
+        self.dashboard.clear_logs_btn.clicked.connect(self.clear_logs)
+        self.dashboard.code_log_btn.clicked.connect(self.open_code_log_terminal)
         self.dashboard.rename_btn.clicked.connect(self.rename_project)
         layout.addWidget(self.dashboard, 1)
 
@@ -942,7 +953,7 @@ class ProjectDashboardPage(QWidget):
             f"alias {name}='cd {path} && docker compose'\n"
             f"alias {name}-php='cd {path} && docker compose exec php php'\n"
             f"alias {name}-composer='cd {path} && docker compose exec php composer'\n"
-            f"alias {name}-bash='cd {path} && docker compose exec php bash'"
+            f"alias {name}-zsh='cd {path} && docker compose exec php zsh'"
         )
         QApplication.clipboard().setText(aliases)
         InfoBar.success(
@@ -954,6 +965,134 @@ class ProjectDashboardPage(QWidget):
             duration=3000,
             parent=self
         )
+
+    def clear_logs(self):
+        """清理项目日志"""
+        if not self.current_project:
+            return
+
+        # 检查项目是否在运行
+        if not self.current_project.is_running:
+            InfoBar.warning(
+                title="提示",
+                content="请先启动项目后再清理日志",
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+            return
+
+        logs_path = Path(self.current_project.path) / "logs"
+        if not logs_path.exists():
+            InfoBar.warning(
+                title="提示",
+                content="日志目录不存在",
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+            return
+
+        # 计算日志总大小
+        total_size = get_dir_size(logs_path)
+        size_str = format_size(total_size)
+
+        # 确认对话框
+        w = MessageBox(
+            "确认清理",
+            f"确定要清空日志文件吗？\n\n当前日志大小: {size_str}\n\n此操作不可撤销。",
+            self
+        )
+        if not w.exec():
+            return
+
+        project_path = str(self.current_project.path)
+
+        try:
+            # 通过 docker exec 在容器内清空日志
+            # 清空 nginx 日志
+            subprocess.run(
+                ["docker", "compose", "exec", "-T", "nginx", "sh", "-c",
+                 "for f in /var/log/nginx/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
+                cwd=project_path,
+                capture_output=True,
+                timeout=30
+            )
+            # 清空 php-fpm 日志
+            subprocess.run(
+                ["docker", "compose", "exec", "-T", "php", "sh", "-c",
+                 "for f in /var/log/php-fpm/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
+                cwd=project_path,
+                capture_output=True,
+                timeout=30
+            )
+
+            InfoBar.success(
+                title="清理完成",
+                content=f"已清空日志文件，释放 {size_str}",
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+            self._reload_current()
+        except Exception as e:
+            InfoBar.error(
+                title="清理失败",
+                content=str(e),
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+
+    def open_code_log_terminal(self):
+        """打开代码日志终端（tail -f src/runtime/*.log）"""
+        if not self.current_project:
+            return
+
+        runtime_path = Path(self.current_project.path) / "src" / "runtime"
+        if not runtime_path.exists():
+            InfoBar.warning(
+                title="提示",
+                content="runtime 目录不存在",
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+            return
+
+        p = str(runtime_path)
+        # 检查是否有 .log 文件
+        log_files = list(runtime_path.glob("*.log"))
+        if not log_files:
+            InfoBar.warning(
+                title="提示",
+                content="runtime 目录下没有 .log 文件",
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+            return
+
+        # 使用后台任务方式监听日志，每5秒检查新文件
+        cmd = f"""cd '{p}' && \
+tracked="" && \
+while true; do \
+  current=$(ls *.log 2>/dev/null | sort); \
+  new=$(echo "$current" | grep -vxF "$tracked"); \
+  if [ -n "$new" ]; then \
+    echo "$new" | while read f; do \
+      [ -n "$f" ] && tail -F "$f" 2>/dev/null & \
+    done; \
+    tracked="$current"; \
+  fi; \
+  sleep 5; \
+done"""
+        terminal = os.environ.get("TERMINAL") or "x-terminal-emulator"
+
+        self._launch_terminal([
+            [terminal, "-e", "sh", "-c", cmd],
+            ["deepin-terminal", "-C", cmd],
+            ["kitty", "--directory", p, "sh", "-c", cmd],
+            ["alacritty", "--working-directory", p, "-e", "sh", "-c", cmd],
+            ["gnome-terminal", "--working-directory", p, "--", "sh", "-c", cmd],
+            ["konsole", "--workdir", p, "-e", "sh", "-c", cmd],
+            ["xfce4-terminal", "--working-directory", p, "-e", cmd],
+            ["xterm", "-e", "sh", "-c", cmd],
+        ])
 
     def edit_config(self):
         if not self.current_project:

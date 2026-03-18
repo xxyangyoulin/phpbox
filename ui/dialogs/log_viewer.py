@@ -1,6 +1,6 @@
 """日志查看器对话框"""
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal
 from pathlib import Path
 import subprocess
 
@@ -174,8 +174,29 @@ class LogViewerDialog(FluentDialog):
         pass
 
     def clear_logs(self):
-        """清空日志"""
-        self.log_text.clear()
+        """清空日志文件"""
+        try:
+            # 清空 nginx 日志
+            subprocess.run(
+                ["docker", "compose", "exec", "-T", "nginx", "sh", "-c",
+                 "for f in /var/log/nginx/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
+                cwd=str(self.project_path),
+                capture_output=True,
+                timeout=30
+            )
+            # 清空 php-fpm 日志
+            subprocess.run(
+                ["docker", "compose", "exec", "-T", "php", "sh", "-c",
+                 "for f in /var/log/php-fpm/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
+                cwd=str(self.project_path),
+                capture_output=True,
+                timeout=30
+            )
+
+            # 清空界面显示
+            self.log_text.clear()
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         """关闭事件"""
