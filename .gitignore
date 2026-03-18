@@ -16,7 +16,6 @@ ENV/
 # PyInstaller
 build/
 dist/
-*.spec
 
 # Debian package
 deb_package/
