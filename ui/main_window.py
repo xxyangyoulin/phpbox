@@ -10,7 +10,7 @@ from typing import Optional, List
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QSystemTrayIcon, QApplication, QGridLayout, QSizePolicy,
-    QGraphicsOpacityEffect
+    QGraphicsOpacityEffect, QLabel
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QIcon, QAction, QPainter, QColor, QBrush, QPen, QFont, QPixmap, QCursor
@@ -68,10 +68,10 @@ def get_project_color(name: str) -> str:
     return PROJECT_COLORS[ord(letter) % len(PROJECT_COLORS)]
 
 
-def make_project_icon(name: str) -> QIcon:
+def make_project_icon(name: str, is_running: bool = True) -> QIcon:
     """根据项目首字母生成彩色圆形图标"""
     letter = name[0].upper() if name else "?"
-    color = get_project_color(name)
+    color = get_project_color(name) if is_running else "#8a8a8a"
 
     # 使用更高分辨率避免模糊
     size = 80
@@ -104,10 +104,19 @@ from qfluentwidgets.common.config import isDarkTheme
 class ProjectNavigationItem(BaseNavigationPushButton):
     """自定义项目导航项，使用更大的图标"""
 
-    def __init__(self, name: str, parent=None):
-        self.project_name = name
-        self.project_color = get_project_color(name)
-        super().__init__(make_project_icon(name), name, True, parent)
+    def __init__(self, project, parent=None):
+        self.project_name = project.name
+        self.project_port = project.port
+        self.is_running = project.is_running
+        self.project_color = get_project_color(project.name)
+        text = f"{project.name}  :{project.port}"
+        super().__init__(make_project_icon(project.name, self.is_running), text, True, parent)
+
+    def set_running_state(self, is_running: bool):
+        if self.is_running != is_running:
+            self.is_running = is_running
+            self._icon = make_project_icon(self.project_name, self.is_running)
+            self.update()
 
     def paintEvent(self, e):
         """重写绘制事件，绘制更大的图标"""
@@ -125,20 +134,17 @@ class ProjectNavigationItem(BaseNavigationPushButton):
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
         # 绘制更大的图标 (24x24 而不是 16x16)
-        # 默认图标位置是 11.5+pl, 10，尺寸 16x16
-        # 大图标以相同中心点放大
         icon_size = 24
         default_icon_size = 16
         default_icon_left = 11.5 + pl
         default_icon_top = 10
 
-        # 使大图标圆心与默认图标圆心对齐
         icon_left = default_icon_left - (icon_size - default_icon_size) / 2
         icon_top = default_icon_top - (icon_size - default_icon_size) / 2
         icon_rect = QRectF(icon_left, icon_top, icon_size, icon_size)
 
         letter = self.project_name[0].upper() if self.project_name else "?"
-        color = QColor(self.project_color)
+        color = QColor(self.project_color if self.is_running else "#8a8a8a")
 
         # 绘制圆形背景
         painter.setPen(Qt.PenStyle.NoPen)
@@ -202,132 +208,176 @@ class ModernDashboardWidget(ScrollArea):
         h_layout.setContentsMargins(24, 24, 24, 24)
         h_layout.setSpacing(16)
 
-        # 项目名 + 状态 Badge
-        top_row = QHBoxLayout()
-        top_row.setSpacing(12)
+        # 顶部主要区域
+        top_main_layout = QHBoxLayout()
+        top_main_layout.setSpacing(16)
+
+        # 头像
+        self.avatar_label = QLabel()
+        self.avatar_label.setFixedSize(48, 48)
+        self.avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top_main_layout.addWidget(self.avatar_label)
+        top_main_layout.setAlignment(self.avatar_label, Qt.AlignmentFlag.AlignTop)
+
+        # 项目信息区域
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(6)
+
+        # 标题和状态
+        title_status_layout = QHBoxLayout()
+        title_status_layout.setSpacing(10)
         self.name_label = TitleLabel("...")
         self.status_badge = BodyLabel("未知")
         self.status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_badge.setFixedSize(72, 26)
-        self.status_badge.setStyleSheet(
-            "color: white; border-radius: 13px; font-weight: bold; background-color: gray;"
-        )
-        top_row.addWidget(self.name_label)
-        top_row.addStretch(1)
-        top_row.addWidget(self.status_badge)
-        h_layout.addLayout(top_row)
+        title_status_layout.addWidget(self.name_label)
+        title_status_layout.addWidget(self.status_badge)
+        title_status_layout.addStretch(1)
+        info_layout.addLayout(title_status_layout)
 
-        # 元信息行
-        meta_row = QHBoxLayout()
-        meta_row.setSpacing(24)
-        self.php_label = BodyLabel("PHP 版本: ...")
-        self.port_label = BodyLabel("端口: ...")
-        meta_row.addWidget(self.php_label)
-        meta_row.addWidget(self.port_label)
-        meta_row.addStretch(1)
-        h_layout.addLayout(meta_row)
+        # 路径
+        self.path_label = CaptionLabel("...")
+        self.path_label.setStyleSheet("color: #64748b; font-family: Consolas, monospace;")
+        info_layout.addWidget(self.path_label)
 
-        self.path_label = CaptionLabel("目录: ...")
-        self.path_label.setWordWrap(True)
-        self.path_label.setStyleSheet("color: #64748b;")
-        h_layout.addWidget(self.path_label)
+        # 统计数据行
+        stats_layout = QHBoxLayout()
+        stats_layout.setSpacing(32)
 
-        # 主操作按钮行
-        action_row = QHBoxLayout()
-        action_row.setSpacing(12)
+        def create_stat_item(label_text):
+            item_layout = QVBoxLayout()
+            item_layout.setSpacing(4)
+            lbl = CaptionLabel(label_text)
+            lbl.setStyleSheet("color: #64748b;")
+            val = BodyLabel("...")
+            val.setStyleSheet("font-weight: 500;")
+            item_layout.addWidget(lbl)
+            item_layout.addWidget(val)
+            return item_layout, val
+
+        php_layout, self.stat_php_val = create_stat_item("PHP 版本")
+        port_layout, self.stat_port_val = create_stat_item("端口")
+        dir_layout, self.stat_dir_val = create_stat_item("目录大小")
+        log_layout, self.stat_log_val = create_stat_item("日志大小")
+
+        stats_layout.addLayout(php_layout)
+        stats_layout.addLayout(port_layout)
+        stats_layout.addLayout(dir_layout)
+        stats_layout.addLayout(log_layout)
+        stats_layout.addStretch(1)
+
+        info_layout.addLayout(stats_layout)
+        top_main_layout.addLayout(info_layout, 1)
+
+        # 顶部操作按钮 (停止/重启/编辑/删除)
+        top_actions_layout = QHBoxLayout()
+        top_actions_layout.setSpacing(8)
 
         self.toggle_btn = PillPushButton(FIF.PLAY, "启动")
-        self.toggle_btn.setMinimumWidth(100)
+        self.toggle_btn.setMinimumHeight(32)
         self.toggle_btn.setCheckable(False)
         self.restart_btn = PillPushButton(FIF.SYNC, "重启")
+        self.restart_btn.setMinimumHeight(32)
         self.restart_btn.setCheckable(False)
+        
+        self.rename_btn = TransparentToolButton(FIF.EDIT)
+        self.rename_btn.setToolTip("项目设置")
+        self.rename_btn.setFixedSize(32, 32)
+        self.delete_btn = TransparentToolButton(FIF.DELETE)
+        self.delete_btn.setToolTip("删除项目")
+        self.delete_btn.setFixedSize(32, 32)
+
+        top_actions_layout.addWidget(self.toggle_btn)
+        top_actions_layout.addWidget(self.restart_btn)
+        top_actions_layout.addWidget(self.rename_btn)
+        top_actions_layout.addWidget(self.delete_btn)
+
+        top_main_layout.addLayout(top_actions_layout, 0)
+        top_main_layout.setAlignment(top_actions_layout, Qt.AlignmentFlag.AlignTop)
+
+        h_layout.addLayout(top_main_layout)
+
+        # 底部操作栏 (Action bar)
+        action_bar_layout = QHBoxLayout()
+        action_bar_layout.setSpacing(12)
+
+        self.browser_btn = PillPushButton(FIF.GLOBE, "打开浏览器")
+        self.browser_btn.setCheckable(False)
         self.log_btn_header = PillPushButton(FIF.DOCUMENT, "查看日志")
         self.log_btn_header.setCheckable(False)
         self.folder_btn_header = PillPushButton(FIF.FOLDER, "打开目录")
         self.folder_btn_header.setCheckable(False)
-        self.browser_btn = PillPushButton(FIF.GLOBE, "打开浏览器")
-        self.browser_btn.setCheckable(False)
 
-        action_row.addWidget(self.toggle_btn)
-        action_row.addWidget(self.restart_btn)
-        action_row.addWidget(self.log_btn_header)
-        action_row.addWidget(self.folder_btn_header)
-        action_row.addWidget(self.browser_btn)
-        action_row.addStretch(1)
-        self.rename_btn = TransparentToolButton(FIF.EDIT)
-        self.rename_btn.setToolTip("项目设置")
-        self.rename_btn.setFixedSize(28, 28)
-        action_row.addWidget(self.rename_btn)
-        self.delete_btn = TransparentToolButton(FIF.DELETE)
-        self.delete_btn.setToolTip("删除项目")
-        self.delete_btn.setFixedSize(28, 28)
-        action_row.addWidget(self.delete_btn)
-        h_layout.addLayout(action_row)
+        for btn in [self.browser_btn, self.log_btn_header, self.folder_btn_header]:
+            btn.setMinimumHeight(32)
+
+        action_bar_layout.addWidget(self.browser_btn)
+        action_bar_layout.addWidget(self.log_btn_header)
+        action_bar_layout.addWidget(self.folder_btn_header)
+        action_bar_layout.addStretch(1)
+
+        h_layout.addLayout(action_bar_layout)
         layout.addWidget(self.header_card)
 
         # --- 工具与操作卡片 ---
         self.tools_card = CardWidget()
         tools_layout = QVBoxLayout(self.tools_card)
-        tools_layout.setContentsMargins(24, 16, 24, 16)
-        tools_layout.setSpacing(12)
+        tools_layout.setContentsMargins(24, 20, 24, 20)
+        tools_layout.setSpacing(16)
 
         tools_header = QHBoxLayout()
         tools_header.addWidget(StrongBodyLabel("工具与操作"))
         tools_header.addStretch()
         tools_layout.addLayout(tools_header)
 
-        tools_grid = QGridLayout()
-        tools_grid.setSpacing(12)
+        tools_content_layout = QVBoxLayout()
+        tools_content_layout.setSpacing(16)
 
-        self.terminal_btn = PillPushButton("进入终端")
-        self.terminal_btn.setCheckable(False)
-        self.docker_btn = PillPushButton("进入容器")
-        self.docker_btn.setCheckable(False)
-        self.config_btn = PillPushButton("编辑配置")
-        self.config_btn.setCheckable(False)
-        self.install_ext_btn = PillPushButton("安装扩展")
-        self.install_ext_btn.setCheckable(False)
-        self.xdebug_btn = PillPushButton("Xdebug 配置")
-        self.xdebug_btn.setCheckable(False)
-        self.alias_btn = PillPushButton("复制 alias")
-        self.alias_btn.setCheckable(False)
-        self.clear_logs_btn = PillPushButton("清理日志")
-        self.clear_logs_btn.setCheckable(False)
-        self.clear_logs_btn.setToolTip("清空 Nginx 和 PHP-FPM 日志文件")
-        self.code_log_btn = PillPushButton("代码日志")
-        self.code_log_btn.setCheckable(False)
-        self.code_log_btn.setToolTip("查看 src/runtime 目录下的日志文件")
+        # 工具组
+        self.terminal_btn = PillPushButton(FIF.COMMAND_PROMPT, "进入终端")
+        self.docker_btn = PillPushButton(FIF.CODE, "进入容器")
+        self.config_btn = PillPushButton(FIF.SETTING, "编辑配置")
+        self.alias_btn = PillPushButton(FIF.COPY, "复制 alias")
+        
+        self.composer_install_btn = PillPushButton(FIF.DOWNLOAD, "Composer Install")
+        self.composer_update_btn = PillPushButton(FIF.SYNC, "Composer Update")
+        self.composer_require_btn = PillPushButton(FIF.ADD, "Composer Require")
+        self.install_ext_btn = PillPushButton(FIF.APPLICATION, "安装扩展")
+        
+        self.xdebug_btn = PillPushButton(FIF.DEVELOPER_TOOLS, "Xdebug 配置")
+        self.code_log_btn = PillPushButton(FIF.DOCUMENT, "代码日志")
+        self.clear_logs_btn = PillPushButton(FIF.DELETE, "清理日志")
 
-        # Composer 快捷按钮
-        self.composer_install_btn = PillPushButton("Composer Install")
-        self.composer_install_btn.setCheckable(False)
-        self.composer_install_btn.setToolTip("composer install")
-        self.composer_update_btn = PillPushButton("Composer Update")
-        self.composer_update_btn.setCheckable(False)
-        self.composer_update_btn.setToolTip("composer update")
-        self.composer_require_btn = PillPushButton("Composer Require")
-        self.composer_require_btn.setCheckable(False)
-        self.composer_require_btn.setToolTip("composer require [包名]")
+        def create_tool_group(title, buttons):
+            group_layout = QVBoxLayout()
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(8)
+            lbl = CaptionLabel(title)
+            lbl.setStyleSheet("color: #64748b; font-weight: 500;")
+            
+            wrapper = QWidget()
+            btn_layout = FlowLayout(wrapper, isTight=True)
+            btn_layout.setSpacing(8)
+            btn_layout.setContentsMargins(0, 0, 0, 0)
+            
+            for btn in buttons:
+                btn.setMinimumHeight(34)
+                btn.setCheckable(False)
+                btn_layout.addWidget(btn)
+                
+            group_layout.addWidget(lbl)
+            group_layout.addWidget(wrapper)
+            return group_layout
 
-        for btn in [self.terminal_btn, self.docker_btn, self.config_btn,
-                    self.install_ext_btn, self.xdebug_btn, self.alias_btn,
-                    self.clear_logs_btn, self.code_log_btn,
-                    self.composer_install_btn, self.composer_update_btn, self.composer_require_btn]:
-            btn.setMinimumHeight(38)
-            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        env_group = create_tool_group("环境", [self.terminal_btn, self.docker_btn, self.config_btn, self.alias_btn])
+        deps_group = create_tool_group("依赖管理", [self.composer_install_btn, self.composer_update_btn, self.composer_require_btn, self.install_ext_btn])
+        debug_group = create_tool_group("调试与日志", [self.xdebug_btn, self.code_log_btn, self.clear_logs_btn])
 
-        tools_grid.addWidget(self.terminal_btn, 0, 0)
-        tools_grid.addWidget(self.docker_btn, 0, 1)
-        tools_grid.addWidget(self.config_btn, 0, 2)
-        tools_grid.addWidget(self.code_log_btn, 1, 0)
-        tools_grid.addWidget(self.install_ext_btn, 1, 1)
-        tools_grid.addWidget(self.xdebug_btn, 1, 2)
-        tools_grid.addWidget(self.alias_btn, 2, 0)
-        tools_grid.addWidget(self.clear_logs_btn, 2, 1)
-        tools_grid.addWidget(self.composer_install_btn, 2, 2)
-        tools_grid.addWidget(self.composer_update_btn, 3, 0)
-        tools_grid.addWidget(self.composer_require_btn, 3, 1)
-        tools_layout.addLayout(tools_grid)
+        tools_content_layout.addLayout(env_group)
+        tools_content_layout.addLayout(deps_group)
+        tools_content_layout.addLayout(debug_group)
+
+        tools_layout.addLayout(tools_content_layout)
         layout.addWidget(self.tools_card)
 
         # --- PHP 配置信息卡片 ---
@@ -431,23 +481,26 @@ class ModernDashboardWidget(ScrollArea):
             animate: 是否触发淡入动画
         """
         self.name_label.setText(project.name)
-        self.name_label.setStyleSheet(f"color: {get_project_color(project.name)};")
-        self.php_label.setText(f"PHP 版本: {project.php_version}")
+        
+        # 正在加载时颜色不变，不运行时变为灰色
+        is_running = loading or project.is_running
+        display_color = get_project_color(project.name) if is_running else "#8a8a8a"
+        self.name_label.setStyleSheet(f"color: {display_color};")
+
+        # 更新头像
+        self.avatar_label.setPixmap(make_project_icon(project.name, is_running).pixmap(48, 48))
 
         # 计算目录大小和日志大小
         project_path = Path(project.path)
         total_size = get_dir_size(project_path)
-
-        # 计算日志目录大小
         logs_path = project_path / "logs"
         logs_size = get_dir_size(logs_path) if logs_path.exists() else 0
 
-        # 格式化显示
-        total_str = format_size(total_size)
-        logs_str = format_size(logs_size)
-
-        self.port_label.setText(f"端口: {project.port}    目录: {total_str}    日志: {logs_str}")
-        self.path_label.setText(f"目录: {project.path}")
+        self.stat_php_val.setText(project.php_version)
+        self.stat_port_val.setText(str(project.port))
+        self.stat_dir_val.setText(format_size(total_size))
+        self.stat_log_val.setText(format_size(logs_size))
+        self.path_label.setText(str(project.path))
 
         if loading:
             self.status_badge.setText("刷新中...")
@@ -670,6 +723,10 @@ class ProjectDashboardPage(QWidget):
                 if p.name == self.current_project.name:
                     self.current_project = p
                     self.dashboard.update_project(p)
+                    # 通知主窗口刷新对应的侧边栏图标状态
+                    main_win = self.window()
+                    if hasattr(main_win, 'update_sidebar_item_state'):
+                        main_win.update_sidebar_item_state(p.name, p.is_running)
                     break
 
     # ---- 项目操作 ----
@@ -1287,6 +1344,7 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setReturnButtonVisible(False)
         self.navigationInterface.setExpandWidth(220)  # 侧边栏宽度
         self._project_nav_keys: List[str] = []
+        self._project_nav_items = {}
 
         self.setWindowTitle("PHP 开发环境管理器")
         self.setMinimumSize(800, 600)
@@ -1325,6 +1383,7 @@ class MainWindow(FluentWindow):
         )
 
         self._project_nav_keys: List[str] = []
+        self._project_nav_items = {}
 
         self.setup_tray()
 
@@ -1335,6 +1394,14 @@ class MainWindow(FluentWindow):
 
         # 初始加载
         self.load_projects()
+
+    def update_sidebar_item_state(self, project_name: str, is_running: bool):
+        """更新侧边栏某一项的运行状态颜色"""
+        route_key = f"proj_{project_name}"
+        if route_key in self._project_nav_items:
+            nav_item = self._project_nav_items[route_key]
+            if hasattr(nav_item, 'set_running_state'):
+                nav_item.set_running_state(is_running)
 
     def load_projects(self, select_project: str = None):
         """异步加载项目列表
@@ -1349,6 +1416,7 @@ class MainWindow(FluentWindow):
             except Exception:
                 pass
         self._project_nav_keys.clear()
+        self._project_nav_items.clear()
 
         # 异步加载项目
         threading.Thread(
@@ -1374,7 +1442,7 @@ class MainWindow(FluentWindow):
             p = project
 
             # 创建自定义导航项
-            nav_item = ProjectNavigationItem(project.name)
+            nav_item = ProjectNavigationItem(project)
 
             self.navigationInterface.insertWidget(
                 index=idx,
@@ -1385,6 +1453,7 @@ class MainWindow(FluentWindow):
                 tooltip=f"PHP {project.php_version} | 端口:{project.port}"
             )
             self._project_nav_keys.append(route_key)
+            self._project_nav_items[route_key] = nav_item
 
         # 选中指定项目或第一个
         if self.projects:
@@ -1437,6 +1506,13 @@ class MainWindow(FluentWindow):
             if p.name == project_name:
                 self.projects[i] = updated
                 break
+
+        # 更新侧边栏项目的状态
+        route_key = f"proj_{project_name}"
+        if route_key in self._project_nav_items:
+            nav_item = self._project_nav_items[route_key]
+            if hasattr(nav_item, 'set_running_state'):
+                nav_item.set_running_state(updated.is_running)
 
         # 如果是当前显示的项目，更新仪表盘
         if self.dashboard_page.current_project and self.dashboard_page.current_project.name == project_name:
