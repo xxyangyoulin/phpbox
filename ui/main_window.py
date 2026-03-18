@@ -31,6 +31,7 @@ from ui.dialogs.settings import SettingsDialog
 from ui.dialogs.config_editor import ConfigEditorDialog
 from ui.dialogs.xdebug_dialog import XdebugDialog
 from ui.dialogs.php_config_dialog import PhpConfigDialog, EDITABLE_CONFIGS
+from ui.dialogs.rename_project_dialog import RenameProjectDialog
 
 
 def get_dir_size(path: Path) -> int:
@@ -234,8 +235,13 @@ class ModernDashboardWidget(ScrollArea):
         action_row.addWidget(self.folder_btn_header)
         action_row.addWidget(self.browser_btn)
         action_row.addStretch(1)
+        self.rename_btn = TransparentToolButton(FIF.EDIT)
+        self.rename_btn.setToolTip("重命名项目")
+        self.rename_btn.setFixedSize(28, 28)
+        action_row.addWidget(self.rename_btn)
         self.delete_btn = TransparentToolButton(FIF.DELETE)
         self.delete_btn.setToolTip("删除项目")
+        self.delete_btn.setFixedSize(28, 28)
         action_row.addWidget(self.delete_btn)
         h_layout.addLayout(action_row)
         layout.addWidget(self.header_card)
@@ -596,6 +602,7 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.composer_install_btn.clicked.connect(self.composer_install)
         self.dashboard.composer_update_btn.clicked.connect(self.composer_update)
         self.dashboard.composer_require_btn.clicked.connect(self.composer_require)
+        self.dashboard.rename_btn.clicked.connect(self.rename_project)
         layout.addWidget(self.dashboard, 1)
 
         self.show_project_view(False)
@@ -768,15 +775,15 @@ class ProjectDashboardPage(QWidget):
             )
             return
         p = str(self.current_project.path)
-        # 使用 bash -c 包装命令，确保 shell 交互
-        cmd = f"cd '{p}' && docker compose exec php bash"
+        # 使用 zsh 进入容器
+        cmd = f"cd '{p}' && docker compose exec php zsh"
         self._launch_terminal([
             ["deepin-terminal", "-C", cmd],
-            ["kitty", "--directory", p, "docker", "compose", "exec", "php", "bash"],
-            ["alacritty", "--working-directory", p, "-e", "docker", "compose", "exec", "php", "bash"],
-            ["gnome-terminal", "--working-directory", p, "--", "docker", "compose", "exec", "php", "bash"],
-            ["konsole", "--workdir", p, "-e", "docker", "compose", "exec", "php", "bash"],
-            ["xfce4-terminal", "--working-directory", p, "-e", "docker compose exec php bash"],
+            ["kitty", "--directory", p, "docker", "compose", "exec", "php", "zsh"],
+            ["alacritty", "--working-directory", p, "-e", "docker", "compose", "exec", "php", "zsh"],
+            ["gnome-terminal", "--working-directory", p, "--", "docker", "compose", "exec", "php", "zsh"],
+            ["konsole", "--workdir", p, "-e", "docker", "compose", "exec", "php", "zsh"],
+            ["xfce4-terminal", "--working-directory", p, "-e", "docker compose exec php zsh"],
             ["xterm", "-e", "sh", "-c", cmd],
         ])
 
@@ -831,6 +838,24 @@ class ProjectDashboardPage(QWidget):
                     duration=3000,
                     parent=self
                 )
+
+    def rename_project(self):
+        """重命名项目"""
+        if not self.current_project:
+            return
+
+        dialog = RenameProjectDialog(self.current_project, self)
+        dialog.project_renamed.connect(self._on_project_renamed)
+        dialog.exec()
+
+    def _on_project_renamed(self, old_name: str, new_name: str):
+        """项目重命名成功回调"""
+        # 通知父级刷新列表
+        parent = self.parent()
+        while parent and not isinstance(parent, MainWindow):
+            parent = parent.parent()
+        if parent:
+            parent.load_projects(select_project=new_name)
 
     def open_browser(self):
         if not self.current_project:
@@ -1062,7 +1087,7 @@ class MainWindow(FluentWindow):
         self._project_nav_keys: List[str] = []
 
         self.setWindowTitle("PHP 开发环境管理器")
-        self.setMinimumSize(1100, 750)
+        self.setMinimumSize(800, 600)
 
         # 直接将仪表盘页加入 stackedWidget
         self.dashboard_page = ProjectDashboardPage(self)
@@ -1226,7 +1251,11 @@ class MainWindow(FluentWindow):
         self.tray_icon.show()
 
     def on_tray_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            # 左键单击
+            self.show()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            # 双击
             self.show()
 
     def create_project(self):

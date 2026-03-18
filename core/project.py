@@ -135,6 +135,73 @@ class ProjectManager:
             print(f"删除项目失败: {e}")
             return False
 
+    def rename_project(self, project: Project, new_name: str) -> bool:
+        """重命名项目"""
+        import time
+        try:
+            # 检查新名称是否已存在
+            if self.project_exists(new_name):
+                return False
+
+            # 如果项目正在运行，先停止
+            was_running = project.is_running
+            if was_running:
+                subprocess.run(
+                    ["docker", "compose", "down"],
+                    cwd=str(project.path),
+                    capture_output=True,
+                    timeout=60
+                )
+
+            # 重命名目录
+            new_path = project.path.parent / new_name
+            project.path.rename(new_path)
+
+            # 更新 docker-compose.yml 中的项目名
+            compose_file = new_path / "docker-compose.yml"
+            if compose_file.exists():
+                content = compose_file.read_text()
+                # 替换 name: phpdev-{old_name}
+                old_prefix = f"phpdev-{project.name}"
+                new_prefix = f"phpdev-{new_name}"
+                content = content.replace(old_prefix, new_prefix)
+                compose_file.write_text(content)
+
+            # 更新 Dockerfile 中的项目名（用于下次重建镜像）
+            dockerfile = new_path / "Dockerfile"
+            if dockerfile.exists():
+                content = dockerfile.read_text()
+                # 替换 PROJECT_NAME="{old_name}"
+                content = re.sub(r'PROJECT_NAME="([^"]*)"', f'PROJECT_NAME="{new_name}"', content)
+                dockerfile.write_text(content)
+
+            # 如果之前是运行状态，重新启动并更新容器内的 zsh 提示符
+            if was_running:
+                # 启动容器
+                subprocess.run(
+                    ["docker", "compose", "up", "-d"],
+                    cwd=str(new_path),
+                    capture_output=True,
+                    timeout=120
+                )
+
+                # 等待容器启动
+                time.sleep(3)
+
+                # 直接在容器中修改 .zshrc 的提示符
+                sed_cmd = f'sed -i \'s/export PROJECT_NAME=.*/export PROJECT_NAME="{new_name}"/\' ~/.zshrc'
+                subprocess.run(
+                    ["docker", "compose", "exec", "-T", "php", "sh", "-c", sed_cmd],
+                    cwd=str(new_path),
+                    capture_output=True,
+                    timeout=30
+                )
+
+            return True
+        except Exception as e:
+            print(f"重命名项目失败: {e}")
+            return False
+
 
 def get_port_usage(port: int, exclude_project_name: Optional[str] = None) -> Optional[str]:
     """检查端口占用情况，返回占用进程名或 None
