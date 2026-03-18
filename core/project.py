@@ -16,6 +16,7 @@ class Project:
     php_version: str = "未知"
     port: str = "未知"
     is_running: bool = False
+    auto_restart: bool = True  # 是否开机自启
 
     @property
     def status_text(self) -> str:
@@ -51,13 +52,15 @@ class ProjectManager:
         php_version = self._get_php_version(path)
         port = self._get_port(path)
         is_running = self._check_running(path)
+        auto_restart = self._get_auto_restart(path)
 
         return Project(
             name=name,
             path=path,
             php_version=php_version,
             port=port,
-            is_running=is_running
+            is_running=is_running,
+            auto_restart=auto_restart
         )
 
     def _get_php_version(self, path: Path) -> str:
@@ -90,6 +93,21 @@ class ProjectManager:
             pass
         return "未知"
 
+    def _get_auto_restart(self, path: Path) -> bool:
+        """获取是否开机自启"""
+        compose_file = path / "docker-compose.yml"
+        if not compose_file.exists():
+            return True
+
+        try:
+            content = compose_file.read_text()
+            # 检查是否有 restart: unless-stopped 或 restart: always
+            if re.search(r'restart:\s*(unless-stopped|always)', content):
+                return True
+        except Exception:
+            pass
+        return False
+
     def _check_running(self, path: Path) -> bool:
         """检查项目是否在运行"""
         try:
@@ -117,6 +135,51 @@ class ProjectManager:
         if not re.match(r'^[a-zA-Z0-9_-]+$', name):
             return False, "项目名只能包含字母、数字、下划线和连字符"
         return True, ""
+
+    def set_auto_restart(self, project: Project, enabled: bool) -> bool:
+        """设置项目开机自启
+
+        Args:
+            project: 项目对象
+            enabled: 是否启用
+
+        Returns:
+            是否成功
+        """
+        compose_file = project.path / "docker-compose.yml"
+        if not compose_file.exists():
+            return False
+
+        try:
+            content = compose_file.read_text()
+
+            if enabled:
+                # 添加或替换 restart: unless-stopped
+                if 'restart:' in content:
+                    # 替换现有的 restart 值
+                    content = re.sub(r'    restart:\s*\S+', '    restart: unless-stopped', content)
+                else:
+                    # 在 php 服务的 user: 之前添加 restart
+                    content = re.sub(
+                        r'(  php:\n(?:.*\n)*?)(    user:)',
+                        r'\1    restart: unless-stopped\n\2',
+                        content
+                    )
+                    # 在 nginx 服务的 entrypoint: 之前添加 restart
+                    content = re.sub(
+                        r'(  nginx:\n(?:.*\n)*?)(    entrypoint:)',
+                        r'\1    restart: unless-stopped\n\2',
+                        content
+                    )
+            else:
+                # 移除 restart 行
+                content = re.sub(r'    restart:.*?\n', '', content)
+
+            compose_file.write_text(content)
+            return True
+        except Exception as e:
+            print(f"设置自启动失败: {e}")
+            return False
 
     def delete_project(self, project: Project) -> bool:
         """删除项目"""

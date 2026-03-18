@@ -264,10 +264,6 @@ class CreateProjectDialog(FluentDialog):
         self.src_dir_input.setVisible(is_import)
         self.src_dir_btn.setVisible(is_import)
 
-        # 显示/隐藏框架选择
-        self.framework_label.setVisible(not is_import)
-        self.framework_combo.setVisible(not is_import)
-
         # 导入时自动填充项目名
         if is_import and self.src_dir_input.text():
             src_path = Path(self.src_dir_input.text())
@@ -278,6 +274,7 @@ class CreateProjectDialog(FluentDialog):
         dialog = QFileDialog(self)
         dialog.setFileMode(QFileDialog.FileMode.Directory)
         dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setDirectory(str(Path.home()))
 
         if dialog.exec():
             selected = dialog.selectedFiles()
@@ -528,7 +525,7 @@ class CreateProjectDialog(FluentDialog):
         php_version = self.php_combo.currentText()
         extensions = self.ext_selector.get_selected_extensions()
         proxy = self.proxy_input.text().strip()
-        framework = self.framework_combo.currentText() if not is_import else "通用"
+        framework = self.framework_combo.currentText()
         src_path = Path(src_dir) if is_import else None
 
         # 保存项目名用于创建成功后选中
@@ -770,6 +767,7 @@ services:
       context: .
       dockerfile: Dockerfile
 {build_args}
+    restart: unless-stopped
     user: "{uid_gid}"
     environment:
       - PROJECT_NAME={project_name}
@@ -789,6 +787,7 @@ services:
   nginx:
     container_name: {prefix}-nginx
     image: nginx:alpine
+    restart: unless-stopped
     entrypoint: ["nginx", "-g", "daemon off;"]
     ports:
       - "{port}:80"

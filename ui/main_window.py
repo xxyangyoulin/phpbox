@@ -255,7 +255,7 @@ class ModernDashboardWidget(ScrollArea):
         action_row.addWidget(self.browser_btn)
         action_row.addStretch(1)
         self.rename_btn = TransparentToolButton(FIF.EDIT)
-        self.rename_btn.setToolTip("重命名项目")
+        self.rename_btn.setToolTip("项目设置")
         self.rename_btn.setFixedSize(28, 28)
         action_row.addWidget(self.rename_btn)
         self.delete_btn = TransparentToolButton(FIF.DELETE)
@@ -681,19 +681,27 @@ class ProjectDashboardPage(QWidget):
         except ValueError:
             port = 8080
 
-        # 检查端口是否被占用（不包括当前项目本身）
-        usage = get_port_usage(port, self.current_project.name)
-        if usage:
-            self._notify("端口冲突", f"端口 {port} 已被 {usage} 占用", "error")
-            return
-
-        # 异步启动
+        # 异步检查端口并启动
         project = self.current_project
         threading.Thread(
-            target=self._async_docker_up,
-            args=(project.path, project.name),
+            target=self._async_check_port_and_start,
+            args=(project.path, project.name, port),
             daemon=True
         ).start()
+
+    def _async_check_port_and_start(self, path: str, name: str, port: int):
+        """异步检查端口并启动"""
+        # 检查端口是否被占用
+        usage = get_port_usage(port, name)
+        if usage:
+            QTimer.singleShot(0, functools.partial(
+                self._notify, "端口冲突", f"端口 {port} 已被 {usage} 占用", "error"
+            ))
+            return
+
+        # 启动服务
+        result = DockerManager(path).up()
+        QTimer.singleShot(0, functools.partial(self._on_docker_up_result, result, name))
 
     def _async_docker_up(self, path: str, name: str):
         """异步执行 docker up"""
@@ -761,7 +769,20 @@ class ProjectDashboardPage(QWidget):
             self._notify("重启失败", str(result.error), "error")
 
     def _reload_current(self):
-        self.projects = self.project_manager.get_all_projects()
+        """异步刷新当前项目状态"""
+        threading.Thread(
+            target=self._async_reload_current,
+            daemon=True
+        ).start()
+
+    def _async_reload_current(self):
+        """异步获取项目列表并刷新"""
+        projects = self.project_manager.get_all_projects()
+        QTimer.singleShot(0, functools.partial(self._on_reload_current, projects))
+
+    def _on_reload_current(self, projects: list):
+        """刷新完成回调"""
+        self.projects = projects
         self.refresh_status()
 
     def view_logs(self):
@@ -867,12 +888,13 @@ class ProjectDashboardPage(QWidget):
                 )
 
     def rename_project(self):
-        """重命名项目"""
+        """打开项目设置对话框"""
         if not self.current_project:
             return
 
         dialog = RenameProjectDialog(self.current_project, self)
         dialog.project_renamed.connect(self._on_project_renamed)
+        dialog.settings_changed.connect(self._reload_current)
         dialog.exec()
 
     def _on_project_renamed(self, old_name: str, new_name: str):
@@ -961,7 +983,7 @@ class ProjectDashboardPage(QWidget):
         ).exec()
 
     def _refresh_php_info(self):
-        """刷新 PHP 配置信息"""
+        """异步刷新 PHP 配置信息"""
         if not self.current_project or not self.current_project.is_running:
             self.dashboard._clear_php_info()
             return
@@ -971,8 +993,22 @@ class ProjectDashboardPage(QWidget):
             label.setText("加载中...")
         self.dashboard.ext_count_label.setText("加载中...")
 
-        docker = DockerManager(self.current_project.path)
+        # 异步获取 PHP 信息
+        project_path = str(self.current_project.path)
+        threading.Thread(
+            target=self._async_get_php_info,
+            args=(project_path,),
+            daemon=True
+        ).start()
+
+    def _async_get_php_info(self, project_path: str):
+        """异步获取 PHP 配置信息"""
+        docker = DockerManager(project_path)
         info = docker.get_php_info()
+        QTimer.singleShot(0, functools.partial(self._on_php_info_loaded, info))
+
+    def _on_php_info_loaded(self, info: dict):
+        """PHP 信息加载完成回调"""
         self.dashboard.update_php_info(info)
 
     def _on_php_config_clicked(self, config_key: str):
@@ -1162,7 +1198,7 @@ class MainWindow(FluentWindow):
         self.load_projects()
 
     def load_projects(self, select_project: str = None):
-        """从 NavigationInterface 移除旧项目项，重新加载
+        """异步加载项目列表
 
         Args:
             select_project: 可选，指定要选中的项目名
@@ -1175,10 +1211,25 @@ class MainWindow(FluentWindow):
                 pass
         self._project_nav_keys.clear()
 
-        self.projects = self.project_manager.get_all_projects()
+        # 异步加载项目
+        threading.Thread(
+            target=self._async_load_projects,
+            args=(select_project,),
+            daemon=True
+        ).start()
+
+    def _async_load_projects(self, select_project: str = None):
+        """异步获取项目列表"""
+        projects = self.project_manager.get_all_projects()
+        callback = functools.partial(self._on_projects_loaded, projects, select_project)
+        QTimer.singleShot(0, callback)
+
+    def _on_projects_loaded(self, projects: list, select_project: str = None):
+        """项目列表加载完成回调"""
+        self.projects = projects
         self.dashboard_page.projects = self.projects
 
-        # 在 SCROLL 区域插入项目导航项（使用自定义组件显示更大图标）
+        # 在 SCROLL 区域插入项目导航项
         for idx, project in enumerate(self.projects):
             route_key = f"proj_{project.name}"
             p = project
@@ -1222,27 +1273,39 @@ class MainWindow(FluentWindow):
         QTimer.singleShot(0, callback)
 
     def _refresh_single_project(self, project_name: str):
-        """刷新单个项目的状态"""
+        """异步刷新单个项目的状态"""
         from core.config import BASE_DIR
 
-        # 重新加载该项目状态
         project_path = BASE_DIR / project_name
         if project_path.exists():
-            updated = self.project_manager._load_project(project_path)
-            if updated:
-                # 更新 self.projects 中的对应项目
-                for i, p in enumerate(self.projects):
-                    if p.name == project_name:
-                        self.projects[i] = updated
-                        break
+            threading.Thread(
+                target=self._async_refresh_single_project,
+                args=(project_name, project_path),
+                daemon=True
+            ).start()
 
-                # 如果是当前显示的项目，更新仪表盘
-                if self.dashboard_page.current_project and self.dashboard_page.current_project.name == project_name:
-                    self.dashboard_page.dashboard.update_project(updated, loading=False)
-                    self.dashboard_page.current_project = updated
-                    # 如果项目运行中，刷新 PHP 配置
-                    if updated.is_running:
-                        QTimer.singleShot(100, self.dashboard_page._refresh_php_info)
+    def _async_refresh_single_project(self, project_name: str, project_path):
+        """异步获取单个项目状态"""
+        updated = self.project_manager._load_project(project_path)
+        if updated:
+            QTimer.singleShot(0, functools.partial(self._on_refresh_single_project, updated))
+
+    def _on_refresh_single_project(self, updated):
+        """单个项目刷新完成回调"""
+        project_name = updated.name
+        # 更新 self.projects 中的对应项目
+        for i, p in enumerate(self.projects):
+            if p.name == project_name:
+                self.projects[i] = updated
+                break
+
+        # 如果是当前显示的项目，更新仪表盘
+        if self.dashboard_page.current_project and self.dashboard_page.current_project.name == project_name:
+            self.dashboard_page.dashboard.update_project(updated, loading=False)
+            self.dashboard_page.current_project = updated
+            # 如果项目运行中，刷新 PHP 配置
+            if updated.is_running:
+                QTimer.singleShot(100, self.dashboard_page._refresh_php_info)
 
     def _auto_refresh(self):
         """定时刷新当前项目状态"""

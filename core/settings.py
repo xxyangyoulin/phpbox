@@ -32,11 +32,11 @@ class Settings:
 
     def get_proxy_host(self) -> str:
         """获取代理主机"""
-        return self.settings.value("proxy/host", "", type=str)
+        return self.settings.value("proxy/host", "127.0.0.1", type=str)
 
     def get_proxy_port(self) -> str:
         """获取代理端口"""
-        return self.settings.value("proxy/port", "", type=str)
+        return self.settings.value("proxy/port", "7890", type=str)
 
     def get_theme(self) -> str:
         """获取主题设置"""
