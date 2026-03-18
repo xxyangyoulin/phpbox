@@ -2,13 +2,14 @@
 from typing import List, Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QScrollArea, QFrame, QSizePolicy
+    QFrame, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from qfluentwidgets import (
     LineEdit, CaptionLabel, FluentIcon as FIF,
-    isDarkTheme, StrongBodyLabel, PrimaryPushButton, ToolButton
+    isDarkTheme, StrongBodyLabel, PrimaryPushButton, ToolButton,
+    SmoothScrollArea
 )
 
 from .status_indicator import ProjectListItem
@@ -58,7 +59,7 @@ class ProjectListWidget(QWidget):
         layout.addLayout(header)
 
         # 项目列表滚动区域
-        self.scroll_area = QScrollArea()
+        self.scroll_area = SmoothScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -66,21 +67,6 @@ class ProjectListWidget(QWidget):
             QScrollArea {
                 background-color: transparent;
                 border: none;
-            }
-            QScrollBar:vertical {
-                width: 4px;
-                background: transparent;
-            }
-            QScrollBar::handle:vertical {
-                background: rgba(128, 128, 128, 0.3);
-                border-radius: 2px;
-                min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: rgba(128, 128, 128, 0.5);
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
             }
         """)
 

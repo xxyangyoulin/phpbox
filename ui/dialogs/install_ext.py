@@ -8,8 +8,8 @@ from pathlib import Path
 import subprocess
 
 from qfluentwidgets import (
-    PushButton, PrimaryPushButton, LineEdit, TextEdit,
-    BodyLabel, CaptionLabel, CheckBox, ProgressBar,
+    PushButton, PrimaryPushButton, PillPushButton, LineEdit, TextEdit,
+    BodyLabel, CaptionLabel, CheckBox, IndeterminateProgressRing,
     CardWidget, StrongBodyLabel, FluentIcon as FIF,
     InfoBar, InfoBarPosition, MessageBox
 )
@@ -144,7 +144,7 @@ class InstallExtDialog(FluentDialog):
         quick_layout = QHBoxLayout()
         quick_layout.addWidget(BodyLabel("常用:"))
         for ext in ["redis", "gd", "mongodb", "swoole", "xdebug"]:
-            btn = PushButton(ext)
+            btn = PillPushButton(ext)
             btn.clicked.connect(lambda checked, e=ext: self.add_extension(e))
             quick_layout.addWidget(btn)
         quick_layout.addStretch()
@@ -188,11 +188,10 @@ class InstallExtDialog(FluentDialog):
         """)
         layout.addWidget(self.log_text, 1)
 
-        # 进度条
-        self.progress = ProgressBar()
-        self.progress.setRange(0, 0)  # 不确定进度
+        # 进度环
+        self.progress = IndeterminateProgressRing()
         self.progress.setVisible(False)
-        layout.addWidget(self.progress)
+        layout.addWidget(self.progress, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # 状态标签
         self.status_label = BodyLabel()

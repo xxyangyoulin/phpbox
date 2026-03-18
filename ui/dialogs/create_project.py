@@ -10,7 +10,7 @@ from qfluentwidgets import (
     SubtitleLabel, BodyLabel, CaptionLabel, StrongBodyLabel,
     LineEdit, PushButton, PrimaryPushButton, CheckBox,
     ComboBox, SpinBox, CardWidget, TextEdit, FluentIcon as FIF,
-    InfoBar, InfoBarPosition, Pivot
+    InfoBar, InfoBarPosition, Pivot, SegmentedWidget
 )
 
 from core.config import BASE_DIR, PHP_VERSIONS, DEFAULT_PORT, ensure_base_dir
@@ -181,10 +181,11 @@ class CreateProjectDialog(FluentDialog):
         # 项目类型选择
         type_layout = QHBoxLayout()
         type_layout.addWidget(BodyLabel("项目类型:"))
-        self.project_type_combo = ComboBox()
-        self.project_type_combo.addItems(["新建项目", "导入已有项目"])
-        self.project_type_combo.currentIndexChanged.connect(self.on_project_type_changed)
-        type_layout.addWidget(self.project_type_combo)
+        self.project_type_segment = SegmentedWidget()
+        self.project_type_segment.addItem("new", "新建项目", lambda: self.on_project_type_changed(0))
+        self.project_type_segment.addItem("import", "导入已有项目", lambda: self.on_project_type_changed(1))
+        self.project_type_segment.setCurrentItem("new")
+        type_layout.addWidget(self.project_type_segment)
         type_layout.addStretch()
         card_layout.addLayout(type_layout)
 
@@ -466,7 +467,7 @@ class CreateProjectDialog(FluentDialog):
     def create_project(self):
         """创建项目"""
         # 检查是否为导入项目
-        is_import = self.project_type_combo.currentIndex() == 1
+        is_import = self.project_type_segment.currentItem() == "import"
         src_dir = self.src_dir_input.text().strip() if is_import else None
 
         # 导入项目时验证源目录

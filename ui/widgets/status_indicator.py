@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, Q
 from PyQt6.QtCore import Qt, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer, pyqtProperty
 from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QLinearGradient, QFont
 
-from qfluentwidgets import BodyLabel, StrongBodyLabel, CaptionLabel, isDarkTheme
+from qfluentwidgets import BodyLabel, StrongBodyLabel, CaptionLabel, isDarkTheme, InfoBadge
 
 
 class ProjectAvatar(QWidget):
@@ -94,21 +94,10 @@ class ProjectListItem(QFrame):
 
         # 状态标签
         if is_running:
-            status_badge = QLabel("运行中")
-            status_badge.setObjectName("statusBadge")
-            status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            status_badge.setFixedHeight(22)
-            status_badge.setStyleSheet("""
-                QLabel#statusBadge {
-                    background-color: rgba(34, 197, 94, 0.15);
-                    color: #22c55e;
-                    border-radius: 11px;
-                    padding: 2px 10px;
-                    font-size: 11px;
-                    font-weight: bold;
-                }
-            """)
-            layout.addWidget(status_badge)
+            self.status_badge = InfoBadge.success("运行中")
+            layout.addWidget(self.status_badge)
+        else:
+            self.status_badge = None
 
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(56)

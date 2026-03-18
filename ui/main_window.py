@@ -9,9 +9,10 @@ from typing import Optional, List
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QSystemTrayIcon, QMenu, QApplication, QGridLayout, QSizePolicy
+    QSystemTrayIcon, QApplication, QGridLayout, QSizePolicy,
+    QGraphicsOpacityEffect
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QIcon, QAction, QPainter, QColor, QBrush, QPen, QFont, QPixmap, QCursor
 
 from qfluentwidgets import (
@@ -19,7 +20,8 @@ from qfluentwidgets import (
     PushButton, PrimaryPushButton, PillPushButton, TransparentToolButton,
     BodyLabel, StrongBodyLabel, CaptionLabel, TitleLabel,
     CardWidget, ScrollArea, FlowLayout,
-    FluentIcon as FIF, InfoBar, InfoBarPosition, MessageBox
+    FluentIcon as FIF, InfoBar, InfoBarPosition, MessageBox,
+    SystemTrayMenu, Action
 )
 
 from core.project import ProjectManager, Project, get_port_usage
@@ -171,6 +173,23 @@ class ModernDashboardWidget(ScrollArea):
         self.container.setObjectName("container")
         self.setup_ui()
         self.setWidget(self.container)
+
+        # 设置透明度效果用于淡入动画
+        self.opacity_effect = QGraphicsOpacityEffect(self.container)
+        self.container.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setOpacity(1.0)
+
+        # 淡入动画
+        self.fade_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_animation.setDuration(200)
+        self.fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def fade_in(self):
+        """执行淡入动画"""
+        self.opacity_effect.setOpacity(0.0)
+        self.fade_animation.setStartValue(0.0)
+        self.fade_animation.setEndValue(1.0)
+        self.fade_animation.start()
 
     def setup_ui(self):
         layout = QVBoxLayout(self.container)
@@ -394,12 +413,13 @@ class ModernDashboardWidget(ScrollArea):
                 self.config_clicked.emit(config_key)
         return handler
 
-    def update_project(self, project: Project, loading: bool = False):
+    def update_project(self, project: Project, loading: bool = False, animate: bool = False):
         """更新项目显示
 
         Args:
             project: 项目对象
             loading: 是否正在加载中
+            animate: 是否触发淡入动画
         """
         self.name_label.setText(project.name)
         self.name_label.setStyleSheet(f"color: {get_project_color(project.name)};")
@@ -446,6 +466,10 @@ class ModernDashboardWidget(ScrollArea):
         # 项目未运行时，配置卡片显示提示
         if not project.is_running:
             self._clear_php_info()
+
+        # 触发淡入动画（仅在切换项目时）
+        if animate:
+            self.fade_in()
 
     def _clear_php_info(self):
         """清空 PHP 配置显示"""
@@ -619,8 +643,11 @@ class ProjectDashboardPage(QWidget):
             loading: 是否正在加载中
         """
         self.current_project = project
-        self.dashboard.update_project(project, loading=loading)
+        self.dashboard.update_project(project, loading=loading, animate=True)
         self.show_project_view(True)
+
+        # 滚动到顶部
+        self.dashboard.verticalScrollBar().setValue(0)
 
         # 如果项目正在运行，异步获取 PHP 配置
         if project.is_running and not loading:
@@ -1234,17 +1261,11 @@ class MainWindow(FluentWindow):
             ))
         self.tray_icon.setToolTip("PHP 开发环境管理器")
 
-        tray_menu = QMenu()
-        show_action = QAction("显示主窗口", self)
-        show_action.triggered.connect(self.show)
-        tray_menu.addAction(show_action)
-        new_project_action = QAction("新建项目", self)
-        new_project_action.triggered.connect(self.create_project)
-        tray_menu.addAction(new_project_action)
+        tray_menu = SystemTrayMenu(parent=self)
+        tray_menu.addAction(Action(FIF.VIEW, "显示主窗口", triggered=self.show))
+        tray_menu.addAction(Action(FIF.ADD, "新建项目", triggered=self.create_project))
         tray_menu.addSeparator()
-        quit_action = QAction("退出", self)
-        quit_action.triggered.connect(self.quit_app)
-        tray_menu.addAction(quit_action)
+        tray_menu.addAction(Action(FIF.CLOSE, "退出", triggered=self.quit_app))
 
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_activated)

@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 
 from qfluentwidgets import (
-    PushButton, ComboBox, LineEdit, TextEdit,
+    PushButton, ComboBox, SearchLineEdit, TextEdit,
     BodyLabel, ToolButton, FluentIcon as FIF
 )
 from ui.styles import FluentDialog
@@ -83,7 +83,7 @@ class LogViewerDialog(FluentDialog):
         toolbar.addWidget(self.service_combo)
 
         # 搜索
-        self.search_input = LineEdit()
+        self.search_input = SearchLineEdit()
         self.search_input.setPlaceholderText("搜索...")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self.filter_logs)
