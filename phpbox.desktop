@@ -1,0 +1,46 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=PHP 开发环境管理器
+Name[zh_CN]=PHP 开发环境管理器
+Name[zh_TW]=PHP 開發環境管理器
+Name[en]=PHP Dev Environment Manager
+GenericName=PHP Development Environment
+GenericName[zh_CN]=PHP 开发环境
+GenericName[zh_TW]=PHP 開發環境
+Comment=Manage PHP Docker development environments with GUI
+Comment[zh_CN]=图形化管理 PHP Docker 开发环境
+Comment[zh_TW]=圖形化管理 PHP Docker 開發環境
+Comment[en]=Manage PHP Docker development environments with GUI
+Keywords=php;docker;development;environment;manager;gui;laravel;symfony;
+Keywords[zh_CN]=php;docker;开发;环境;管理;laravel;symfony;
+Exec=phpbox %F
+TryExec=phpbox
+Icon=phpbox
+StartupNotify=true
+Terminal=false
+StartupNotify=true
+StartupWMClass=phpbox
+Categories=Development;IDE;Qt;
+MimeType=application/x-php;
+
+# 开机自启动支持
+X-GNOME-Autostart=true
+X-GNOME-Autostart-phase=Application
+X-MATE-Autostart=true
+X-KDE-autostart=true
+X-KDE-autostart-phase=2
+
+# Deepin 支持
+X-Deepin-Vendor=user-custom
+X-Deepin-TurboType=dtk
+
+# 支持的动作
+Actions=NewProject;
+
+[Desktop Action NewProject]
+Name=新建项目
+Name[zh_CN]=新建项目
+Name[zh_TW]=新建專案
+Name[en]=New Project
+Exec=phpbox --new-project

@@ -1,0 +1,21 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=PHP 开发环境管理器 (自启动)
+Name[zh_CN]=PHP 开发环境管理器 (自启动)
+Comment=PHP Development Environment Manager - Autostart
+Comment[zh_CN]=PHP 开发环境管理器 - 开机自启动
+Exec=phpbox --hide
+Icon=phpbox
+Terminal=false
+Categories=Development;
+
+# 自启动配置
+X-GNOME-Autostart=true
+X-GNOME-Autostart-phase=Application
+X-MATE-Autostart=true
+X-KDE-autostart=true
+X-KDE-autostart-phase=2
+
+# 隐藏自启动项
+NoDisplay=true

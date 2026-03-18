@@ -1,0 +1,29 @@
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Debian package
+deb_package/
+
+# Compiled executable
+phpbox
+
+# Test scripts (development)
+test_*.py
+app_test_*.py
