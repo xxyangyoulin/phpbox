@@ -1,8 +1,5 @@
 """修改端口对话框"""
 
-import subprocess
-import threading
-
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 
@@ -13,6 +10,7 @@ from qfluentwidgets import (
 )
 
 from core.project import Project, ProjectManager, get_port_usage
+from core.docker import DockerManager
 from ui.styles import FluentDialog
 
 
@@ -26,26 +24,19 @@ class RestartWorker(QThread):
 
     def run(self):
         try:
+            docker = DockerManager(self.project_path)
+            compose_cmd = docker.get_compose_command()
+            if not compose_cmd:
+                self.finished.emit(False, "未检测到 docker compose 或 docker-compose")
+                return
             # 先停止
-            subprocess.run(
-                ["docker", "compose", "down"],
-                cwd=self.project_path,
-                capture_output=True,
-                timeout=60
-            )
+            docker.down()
             # 再启动
-            result = subprocess.run(
-                ["docker", "compose", "up", "-d"],
-                cwd=self.project_path,
-                capture_output=True,
-                timeout=120
-            )
-            if result.returncode == 0:
+            result = docker.up()
+            if result.success:
                 self.finished.emit(True, "容器已重启")
             else:
-                self.finished.emit(False, result.stderr.decode()[:200] if result.stderr else "重启失败")
-        except subprocess.TimeoutExpired:
-            self.finished.emit(False, "操作超时")
+                self.finished.emit(False, result.error[:200] if result.error else "重启失败")
         except Exception as e:
             self.finished.emit(False, str(e))
 

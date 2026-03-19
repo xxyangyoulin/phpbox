@@ -1,4 +1,7 @@
 """配置文件编辑器对话框"""
+import shutil
+import subprocess
+import webbrowser
 from pathlib import Path
 from typing import Optional, List
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QFrame, QMessageBox
@@ -560,9 +563,25 @@ class ConfigEditorDialog(FluentDialog):
                 return  # 用户取消
 
         try:
-            import subprocess
-            subprocess.Popen(["xdg-open", str(self.current_file)])
-            self.status_label.setText("已在外部编辑器中打开")
+            target = str(self.current_file)
+            candidates = [
+                ["xdg-open", target],
+                ["gio", "open", target],
+                ["kioclient5", "exec", target],
+                ["kde-open5", target],
+            ]
+            for cmd in candidates:
+                if not shutil.which(cmd[0]):
+                    continue
+                subprocess.Popen(cmd)
+                self.status_label.setText("已在外部编辑器中打开")
+                return
+
+            if webbrowser.open(target):
+                self.status_label.setText("已在外部编辑器中打开")
+                return
+
+            raise RuntimeError("未找到可用的系统打开命令")
         except Exception as e:
             InfoBar.error(title="错误", content=f"无法打开外部编辑器: {e}", parent=self)
 

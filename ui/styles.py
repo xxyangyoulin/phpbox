@@ -2,8 +2,34 @@
 import os
 from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
-from qfluentwidgets import setTheme, Theme
+from qfluentwidgets import InfoBar, setTheme, Theme
 from core.logger import logger
+
+
+DEFAULT_INFOBAR_DURATION = 5000
+
+
+def _patch_infobar_duration():
+    """为所有 InfoBar 设置默认自动关闭时长"""
+    if getattr(InfoBar, "_phpbox_duration_patched", False):
+        return
+
+    def make_wrapper(method):
+        def wrapper(*args, **kwargs):
+            duration = kwargs.get("duration")
+            if duration is None or duration <= 0:
+                kwargs["duration"] = DEFAULT_INFOBAR_DURATION
+            return method(*args, **kwargs)
+
+        return wrapper
+
+    for name in ("success", "error", "warning", "info"):
+        setattr(InfoBar, name, staticmethod(make_wrapper(getattr(InfoBar, name))))
+
+    InfoBar._phpbox_duration_patched = True
+
+
+_patch_infobar_duration()
 
 
 def themed_color(light: str, dark: str) -> str:

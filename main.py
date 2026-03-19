@@ -9,7 +9,7 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QSettings, qInstallMessageHandler, QtMsgType
 from ui.main_window import MainWindow
 from ui.styles import apply_theme, ThemeWatcher
@@ -76,19 +76,18 @@ def main():
     apply_theme(app, theme)
 
     # 检查 Docker 是否可用
+    docker_ready = True
+    docker_error = ""
     try:
         subprocess.run(
             ["docker", "info"],
             capture_output=True, timeout=10, check=True
         )
-    except Exception:
-        QMessageBox.critical(
-            None, "Docker 未就绪",
-            "无法连接到 Docker 守护进程。\n请确认 Docker 已安装并正在运行。"
-        )
-        sys.exit(1)
+    except Exception as e:
+        docker_ready = False
+        docker_error = str(e) or "无法连接到 Docker 守护进程，请确认 Docker 已安装并正在运行。"
 
-    window = MainWindow()
+    window = MainWindow(docker_ready=docker_ready, docker_error=docker_error)
 
     # 根据参数决定是否显示窗口
     if args.hide:

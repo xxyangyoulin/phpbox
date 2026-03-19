@@ -36,9 +36,13 @@ class InstallExtWorker(QThread):
     def run(self):
         self.logs = []
         try:
+            docker = DockerManager(self.project_path)
+            compose_cmd = docker.get_compose_command()
+            if not compose_cmd:
+                self.finished.emit(False, "未检测到 docker compose 或 docker-compose", self.logs)
+                return
             # 安装扩展
-            cmd = ["docker", "compose", "exec", "-u", "root", "php",
-                   "install-php-extensions"] + self.extensions
+            cmd = compose_cmd + ["exec", "-u", "root", "php", "install-php-extensions"] + self.extensions
 
             # 设置环境变量（包含代理）
             env = os.environ.copy()
@@ -77,7 +81,7 @@ class InstallExtWorker(QThread):
                 # 重启 PHP 服务
                 self.logs.append("")
                 self.logs.append("=== 重启 PHP 服务 ===")
-                restart_cmd = ["docker", "compose", "restart", "php"]
+                restart_cmd = compose_cmd + ["restart", "php"]
                 result = subprocess.run(
                     restart_cmd,
                     cwd=str(self.project_path),

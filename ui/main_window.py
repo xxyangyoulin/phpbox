@@ -2,6 +2,7 @@
 import os
 import shlex
 import subprocess
+import shutil
 import threading
 import time as _time
 import webbrowser
@@ -843,6 +844,12 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.setVisible(show)
         self.empty_container.setVisible(not show)
 
+    def _ensure_docker_ready(self) -> bool:
+        main_win = self.window()
+        if hasattr(main_win, "ensure_docker_ready"):
+            return main_win.ensure_docker_ready()
+        return True
+
     def show_project(self, project: Project, loading: bool = False):
         """显示项目
 
@@ -880,6 +887,8 @@ class ProjectDashboardPage(QWidget):
     def toggle_running(self):
         """启动或停止项目"""
         if not self.current_project:
+            return
+        if not self._ensure_docker_ready():
             return
         if self.current_project.is_running:
             self.stop_project()
@@ -939,6 +948,7 @@ class ProjectDashboardPage(QWidget):
             QTimer.singleShot(500, self._reload_current)
         else:
             self._notify(fail_title, str(result.error), "error")
+            QTimer.singleShot(500, self._reload_current)
 
     def stop_project(self):
         if not self.current_project:
@@ -953,6 +963,8 @@ class ProjectDashboardPage(QWidget):
     def restart_project(self):
         """重启项目（restart 不需要检查端口，因为只是重启容器内的进程）"""
         if not self.current_project:
+            return
+        if not self._ensure_docker_ready():
             return
         project = self.current_project
         threading.Thread(
@@ -1016,15 +1028,30 @@ class ProjectDashboardPage(QWidget):
             )
             return
         p = str(self.current_project.path)
-        # 使用 zsh 进入容器
-        cmd = f"cd {shlex.quote(p)} && docker compose exec php zsh"
+        docker = DockerManager(self.current_project.path)
+        compose_cmd = docker.get_compose_command()
+        compose_text = docker.get_compose_command_text()
+        if not compose_cmd:
+            InfoBar.error(
+                title="错误",
+                content="未检测到 docker compose 或 docker-compose",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+            return
+        # 在容器内优先使用 zsh，其次 bash，最后 sh
+        shell_entry = "if command -v zsh >/dev/null 2>&1; then exec zsh; elif command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi"
+        cmd = f"cd {shlex.quote(p)} && {compose_text} exec php sh -lc {shlex.quote(shell_entry)}"
         self._launch_terminal([
             ["deepin-terminal", "-C", cmd],
-            ["kitty", "--directory", p, "docker", "compose", "exec", "php", "zsh"],
-            ["alacritty", "--working-directory", p, "-e", "docker", "compose", "exec", "php", "zsh"],
-            ["gnome-terminal", "--working-directory", p, "--", "docker", "compose", "exec", "php", "zsh"],
-            ["konsole", "--workdir", p, "-e", "docker", "compose", "exec", "php", "zsh"],
-            ["xfce4-terminal", "--working-directory", p, "-e", "docker compose exec php zsh"],
+            ["kitty", "--directory", p, *compose_cmd, "exec", "php", "sh", "-lc", shell_entry],
+            ["alacritty", "--working-directory", p, "-e", *compose_cmd, "exec", "php", "sh", "-lc", shell_entry],
+            ["gnome-terminal", "--working-directory", p, "--", *compose_cmd, "exec", "php", "sh", "-lc", shell_entry],
+            ["konsole", "--workdir", p, "-e", *compose_cmd, "exec", "php", "sh", "-lc", shell_entry],
+            ["xfce4-terminal", "--working-directory", p, "-e", f"{compose_text} exec php sh -lc {shlex.quote(shell_entry)}"],
             ["xterm", "-e", "sh", "-c", cmd],
         ])
 
@@ -1032,6 +1059,9 @@ class ProjectDashboardPage(QWidget):
         """启动终端，避免 PyInstaller 打包后的库冲突"""
         for cmd in cmds:
             try:
+                executable = cmd[0]
+                if not shutil.which(executable):
+                    continue
                 # 清除 LD_LIBRARY_PATH 避免与系统库冲突
                 env = os.environ.copy()
                 env.pop('LD_LIBRARY_PATH', None)
@@ -1049,6 +1079,28 @@ class ProjectDashboardPage(QWidget):
             duration=3000,
             parent=self
         )
+
+    def _open_with_system(self, target: str) -> bool:
+        """使用系统默认程序打开文件、目录或 URL"""
+        candidates = [
+            ["xdg-open", target],
+            ["gio", "open", target],
+            ["kioclient5", "exec", target],
+            ["kde-open5", target],
+        ]
+
+        for cmd in candidates:
+            if not shutil.which(cmd[0]):
+                continue
+            try:
+                env = os.environ.copy()
+                env.pop('LD_LIBRARY_PATH', None)
+                subprocess.Popen(cmd, env=env)
+                return True
+            except Exception:
+                continue
+
+        return False
 
     def delete_project(self):
         if not self.current_project:
@@ -1117,26 +1169,16 @@ class ProjectDashboardPage(QWidget):
         if not self.current_project:
             return
         url = f"http://localhost:{self.current_project.port}"
-        try:
-            # 清除库路径避免冲突
-            env = os.environ.copy()
-            env.pop('LD_LIBRARY_PATH', None)
-            subprocess.Popen(["xdg-open", url], env=env)
-        except FileNotFoundError:
-            # 回退到 webbrowser 模块
+        if not self._open_with_system(url):
             webbrowser.open(url)
 
     def open_folder(self):
         if not self.current_project:
             return
-        try:
-            env = os.environ.copy()
-            env.pop('LD_LIBRARY_PATH', None)
-            subprocess.Popen(["xdg-open", str(self.current_project.path)], env=env)
-        except Exception as e:
+        if not self._open_with_system(str(self.current_project.path)):
             InfoBar.error(
                 title="错误",
-                content=f"无法打开目录: {e}",
+                content="无法打开目录，请确认系统已安装 xdg-open 或 gio",
                 parent=self
             )
 
@@ -1144,12 +1186,15 @@ class ProjectDashboardPage(QWidget):
         if not self.current_project:
             return
         name, path = self.current_project.name, self.current_project.path
+        docker = DockerManager(path)
+        compose_text = docker.get_compose_command_text()
+        shell_alias = "sh -lc 'if command -v zsh >/dev/null 2>&1; then exec zsh; elif command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi'"
         aliases = (
             f"# PHP 项目: {name}\n"
-            f"alias {name}='cd {path} && docker compose'\n"
-            f"alias {name}-php='cd {path} && docker compose exec php php'\n"
-            f"alias {name}-composer='cd {path} && docker compose exec php composer'\n"
-            f"alias {name}-zsh='cd {path} && docker compose exec php zsh'"
+            f"alias {name}='cd {path} && {compose_text}'\n"
+            f"alias {name}-php='cd {path} && {compose_text} exec php php'\n"
+            f"alias {name}-composer='cd {path} && {compose_text} exec php composer'\n"
+            f"alias {name}-shell='cd {path} && {compose_text} exec php {shell_alias}'"
         )
         QApplication.clipboard().setText(aliases)
         InfoBar.success(
@@ -1201,21 +1246,31 @@ class ProjectDashboardPage(QWidget):
             return
 
         project_path = str(self.current_project.path)
+        docker = DockerManager(self.current_project.path)
+        compose_cmd = docker.get_compose_command()
+        if not compose_cmd:
+            InfoBar.error(
+                title="清理失败",
+                content="未检测到 docker compose 或 docker-compose",
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+            return
 
         try:
             # 通过 docker exec 在容器内清空日志
             # 清空 nginx 日志
             subprocess.run(
-                ["docker", "compose", "exec", "-T", "nginx", "sh", "-c",
-                 "for f in /var/log/nginx/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
+                compose_cmd + ["exec", "-T", "nginx", "sh", "-c",
+                               "for f in /var/log/nginx/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
                 cwd=project_path,
                 capture_output=True,
                 timeout=30
             )
             # 清空 php-fpm 日志
             subprocess.run(
-                ["docker", "compose", "exec", "-T", "php", "sh", "-c",
-                 "for f in /var/log/php-fpm/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
+                compose_cmd + ["exec", "-T", "php", "sh", "-c",
+                               "for f in /var/log/php-fpm/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
                 cwd=project_path,
                 capture_output=True,
                 timeout=30
@@ -1382,12 +1437,26 @@ class ProjectDashboardPage(QWidget):
             full_cmd += f" {package}"
 
         p = str(self.current_project.path)
+        docker = DockerManager(self.current_project.path)
+        compose_cmd = docker.get_compose_command()
+        compose_text = docker.get_compose_command_text()
+        if not compose_cmd:
+            InfoBar.error(
+                title="错误",
+                content="未检测到 docker compose 或 docker-compose",
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+            return
         # 在终端中执行 composer 命令
+        shell_cmd = f"cd {shlex.quote(p)} && {compose_text} exec php sh -lc {shlex.quote(full_cmd)}"
         self._launch_terminal([
-            ["kitty", "--directory", p, "docker", "compose", "exec", "php", "zsh", "-c", full_cmd],
-            ["alacritty", "--working-directory", p, "-e", "docker", "compose", "exec", "php", "zsh", "-c", full_cmd],
-            ["gnome-terminal", "--working-directory", p, "--", "docker", "compose", "exec", "php", "zsh", "-c", full_cmd],
-            ["konsole", "--workdir", p, "-e", "docker", "compose", "exec", "php", "zsh", "-c", full_cmd],
+            ["kitty", "--directory", p, *compose_cmd, "exec", "php", "sh", "-lc", full_cmd],
+            ["alacritty", "--working-directory", p, "-e", *compose_cmd, "exec", "php", "sh", "-lc", full_cmd],
+            ["gnome-terminal", "--working-directory", p, "--", *compose_cmd, "exec", "php", "sh", "-lc", full_cmd],
+            ["konsole", "--workdir", p, "-e", *compose_cmd, "exec", "php", "sh", "-lc", full_cmd],
+            ["xfce4-terminal", "--working-directory", p, "-e", f"{compose_text} exec php sh -lc {shlex.quote(full_cmd)}"],
+            ["xterm", "-e", "sh", "-c", shell_cmd],
         ])
 
     def composer_install(self):
@@ -1449,10 +1518,12 @@ class ProjectDashboardPage(QWidget):
 class MainWindow(FluentWindow):
     """主窗口  —— 使用 FluentWindow 标准侧边栏展示项目列表"""
 
-    def __init__(self):
+    def __init__(self, docker_ready: bool = True, docker_error: str = ""):
         super().__init__()
         self.project_manager = ProjectManager()
         self.projects: List[Project] = []
+        self.docker_ready = docker_ready
+        self.docker_error = docker_error
 
         # 确保折叠按钮显示在顶部，且隐藏多余的返回按钮
         self.navigationInterface.setMenuButtonVisible(True)
@@ -1512,6 +1583,29 @@ class MainWindow(FluentWindow):
 
         # 首次启动代理提示（窗口渲染完成后再弹）
         QTimer.singleShot(800, self._check_first_launch_proxy)
+        QTimer.singleShot(500, self._show_startup_warnings)
+
+    def ensure_docker_ready(self) -> bool:
+        """确认 Docker 可用，不可用时给出统一提示"""
+        if self.docker_ready:
+            return True
+
+        message = "Docker 未就绪，请先启动 Docker 服务后再试。"
+        if self.docker_error:
+            message = f"{message}\n\n详细信息: {self.docker_error}"
+
+        self._notify("Docker 未就绪", message, "warning")
+        return False
+
+    def _show_startup_warnings(self):
+        """启动后的环境提示"""
+        if self.docker_ready:
+            return
+        self._notify(
+            "Docker 未就绪",
+            "已进入只读/受限模式。你仍可浏览项目和修改配置，但 Docker 相关操作暂不可用。",
+            "warning"
+        )
 
     def update_sidebar_item_state(self, project_name: str, is_running: bool):
         """更新侧边栏某一项的运行状态颜色"""
@@ -1676,6 +1770,8 @@ class MainWindow(FluentWindow):
             self.show()
 
     def create_project(self):
+        if not self.ensure_docker_ready():
+            return
         dialog = CreateProjectDialog(self)
         dialog.project_created.connect(self._on_project_created)
         dialog.show()
@@ -1718,6 +1814,8 @@ class MainWindow(FluentWindow):
 
     def start_all_projects(self):
         """启动所有已停止的项目"""
+        if not self.ensure_docker_ready():
+            return
         # 先刷新项目状态
         self.projects = self.project_manager.get_all_projects()
 
@@ -1772,6 +1870,8 @@ class MainWindow(FluentWindow):
 
     def stop_all_projects(self):
         """停止所有正在运行的项目"""
+        if not self.ensure_docker_ready():
+            return
         # 先刷新项目状态
         self.projects = self.project_manager.get_all_projects()
 
@@ -1835,11 +1935,9 @@ class MainWindow(FluentWindow):
 
         # 只在错误或警告时发送系统托盘通知
         if notify_type in ("error", "warning"):
-            tray_icons = {
-                "error": QSystemTrayIcon.MessageIcon.Critical,
-                "warning": QSystemTrayIcon.MessageIcon.Warning,
-            }
-            tray_icon_type = tray_icons.get(notify_type, QSystemTrayIcon.MessageIcon.Warning)
+            # Linux 桌面环境常会把 Critical/Warning 视为持久通知，这里统一降为
+            # Information，确保端口冲突等提醒能按超时自动消失。
+            tray_icon_type = QSystemTrayIcon.MessageIcon.Information
             self.tray_icon.showMessage(title, msg, tray_icon_type, 3000)
 
     def quit_app(self):

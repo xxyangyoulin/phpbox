@@ -8,6 +8,7 @@ from qfluentwidgets import (
     PushButton, ComboBox, SearchLineEdit, TextEdit,
     BodyLabel, ToolButton, FluentIcon as FIF
 )
+from core.docker import DockerManager
 from ui.styles import FluentDialog, themed_color
 
 
@@ -24,7 +25,11 @@ class LogReaderThread(QThread):
         self._running = True
 
     def run(self):
-        cmd = ["docker", "compose", "logs", "-f"]
+        docker = DockerManager(self.project_path)
+        cmd = docker.get_compose_command() + ["logs", "-f"]
+        if not docker.get_compose_command():
+            self.error_occurred.emit("未检测到 docker compose 或 docker-compose")
+            return
         if self.service:
             cmd.append(self.service)
 
@@ -178,18 +183,22 @@ class LogViewerDialog(FluentDialog):
     def clear_logs(self):
         """清空日志文件"""
         try:
+            docker = DockerManager(self.project_path)
+            compose_cmd = docker.get_compose_command()
+            if not compose_cmd:
+                return
             # 清空 nginx 日志
             subprocess.run(
-                ["docker", "compose", "exec", "-T", "nginx", "sh", "-c",
-                 "for f in /var/log/nginx/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
+                compose_cmd + ["exec", "-T", "nginx", "sh", "-c",
+                               "for f in /var/log/nginx/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
                 cwd=str(self.project_path),
                 capture_output=True,
                 timeout=30
             )
             # 清空 php-fpm 日志
             subprocess.run(
-                ["docker", "compose", "exec", "-T", "php", "sh", "-c",
-                 "for f in /var/log/php-fpm/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
+                compose_cmd + ["exec", "-T", "php", "sh", "-c",
+                               "for f in /var/log/php-fpm/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
                 cwd=str(self.project_path),
                 capture_output=True,
                 timeout=30

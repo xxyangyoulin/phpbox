@@ -1,15 +1,41 @@
 """日志模块"""
 import logging
+import os
 import sys
+import tempfile
 from pathlib import Path
 from datetime import datetime
+
+
+def _resolve_log_dir() -> Path:
+    """解析可写日志目录，优先用户目录，失败时回退到临时目录"""
+    candidates = []
+
+    env_dir = os.environ.get("PHPBOX_LOG_DIR")
+    if env_dir:
+        candidates.append(Path(env_dir).expanduser())
+
+    candidates.append(Path.home() / ".phpbox" / "logs")
+    candidates.append(Path(tempfile.gettempdir()) / "phpbox-logs")
+
+    for path in candidates:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            test_file = path / ".write-test"
+            test_file.write_text("ok", encoding="utf-8")
+            test_file.unlink(missing_ok=True)
+            return path
+        except Exception:
+            continue
+
+    # 理论上的最后回退
+    return Path(tempfile.gettempdir())
 
 
 def setup_logger(name: str = "phpbox") -> logging.Logger:
     """设置日志记录器"""
     # 日志目录
-    log_dir = Path.home() / ".phpbox" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = _resolve_log_dir()
 
     # 日志文件名（按日期）
     log_file = log_dir / f"{datetime.now().strftime('%Y-%m-%d')}.log"

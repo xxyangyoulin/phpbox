@@ -196,8 +196,11 @@ xdebug.start_with_request=trigger
         """获取 Docker 网关地址"""
         import subprocess
         try:
+            compose_cmd = self.docker.get_compose_command()
+            if not compose_cmd:
+                return "host.docker.internal"
             result = subprocess.run(
-                ["docker", "compose", "exec", "php", "ip", "route"],
+                compose_cmd + ["exec", "php", "ip", "route"],
                 cwd=str(self.project_path),
                 capture_output=True,
                 text=True,

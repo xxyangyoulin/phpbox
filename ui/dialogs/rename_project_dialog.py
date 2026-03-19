@@ -1,5 +1,4 @@
 """项目设置对话框"""
-import subprocess
 import threading
 
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout
@@ -246,6 +245,10 @@ class RenameProjectDialog(FluentDialog):
     def _async_apply_restart_policy(self, project_path: str):
         """异步应用 restart 策略"""
         try:
+            docker = DockerManager(project_path)
+            compose_cmd = docker.get_compose_command()
+            if not compose_cmd:
+                return
             # 检查端口是否被占用
             port = None
             try:
@@ -259,11 +262,6 @@ class RenameProjectDialog(FluentDialog):
                     print(f"端口 {port} 已被 {usage} 占用，跳过重启")
                     return
 
-            subprocess.run(
-                ["docker", "compose", "up", "-d"],
-                cwd=project_path,
-                capture_output=True,
-                timeout=60
-            )
+            docker.up()
         except Exception as e:
             print(f"应用 restart 策略失败: {e}")

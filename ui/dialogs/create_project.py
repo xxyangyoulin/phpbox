@@ -236,7 +236,11 @@ class BuildWorker(QThread):
                 self.logs.append(f"使用代理: {self.proxy}")
                 self.logs.append("")
 
-            cmd = ["docker", "compose", "build", "--no-cache"]
+            docker = DockerManager(self.project_path)
+            cmd = docker.get_compose_command() + ["build", "--no-cache"]
+            if not docker.get_compose_command():
+                self.finished.emit(False, "未检测到 docker compose 或 docker-compose", self.logs)
+                return
             self.process = subprocess.Popen(
                 cmd,
                 cwd=str(self.project_path),

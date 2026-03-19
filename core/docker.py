@@ -27,6 +27,7 @@ class DockerManager:
 
     _compose_cmd: List[str] = []
     _compose_checked: bool = False
+    _APP_SERVICES = ["php", "nginx"]
 
     def __init__(self, project_path: Path):
         self.project_path = project_path
@@ -65,6 +66,18 @@ class DockerManager:
 
         self._compose_checked = True  # 标记已检测过
 
+    def get_compose_command(self) -> List[str]:
+        """获取当前可用的 compose 命令前缀"""
+        self._detect_compose()
+        return list(self._compose_cmd)
+
+    def get_compose_command_text(self) -> str:
+        """获取当前可用的 compose 命令文本"""
+        compose_cmd = self.get_compose_command()
+        if compose_cmd:
+            return " ".join(compose_cmd)
+        return "docker compose"
+
     def _run_command(self, args: List[str], capture: bool = True,
                      env: Optional[dict] = None) -> DockerResult:
         """执行 docker compose 命令"""
@@ -101,7 +114,37 @@ class DockerManager:
         args = ["up", "-d"]
         if build:
             args.insert(1, "--build")
-        return self._run_command(args)
+        result = self._run_command(args)
+        if result.success:
+            validation = self.ensure_services_running(self._APP_SERVICES, timeout=12)
+            if validation.success:
+                return result
+
+            cleanup_result = self.down()
+            cleanup_message = "已自动回滚并清理残留容器。" if cleanup_result.success else (
+                f"自动回滚失败，请手动执行 {self.get_compose_command_text()} down。"
+            )
+            return DockerResult(
+                success=False,
+                error=f"{validation.error}\n\n{cleanup_message}",
+                port_conflict=validation.port_conflict,
+                port_conflict_detail=validation.port_conflict_detail,
+            )
+
+        cleanup_result = self.down()
+        if cleanup_result.success:
+            cleanup_message = "已自动回滚并清理残留容器。"
+        else:
+            cleanup_error = cleanup_result.error.strip() or "未知原因"
+            cleanup_message = f"自动回滚失败，请手动执行 docker compose down。回滚错误: {cleanup_error}"
+
+        error = result.error.strip() or "docker compose up 执行失败"
+        return DockerResult(
+            success=False,
+            error=f"{error}\n\n{cleanup_message}",
+            port_conflict=result.port_conflict,
+            port_conflict_detail=result.port_conflict_detail,
+        )
 
     def get_project_port(self) -> Optional[int]:
         """获取项目配置的端口
@@ -151,7 +194,28 @@ class DockerManager:
 
     def restart(self) -> DockerResult:
         """重启服务"""
-        return self._run_command(["restart"])
+        port = self.get_project_port()
+        if port:
+            from core.project import get_port_usage
+
+            project_name = self.project_path.name
+            usage = get_port_usage(port, project_name)
+            if usage:
+                return DockerResult(
+                    success=False,
+                    error=f"端口 {port} 已被 {usage} 占用，无法重启项目",
+                    port_conflict=True,
+                    port_conflict_detail=f"端口 {port} 已被 {usage} 占用"
+                )
+
+        down_result = self.down()
+        if not down_result.success:
+            return DockerResult(
+                success=False,
+                error=down_result.error.strip() or "停止现有容器失败，无法继续重启"
+            )
+
+        return self.up()
 
     def down(self, remove_images: bool = False) -> DockerResult:
         """删除服务"""
@@ -172,7 +236,9 @@ class DockerManager:
     def get_logs(self, service: Optional[str] = None,
                  follow: bool = False) -> subprocess.Popen:
         """获取日志 (返回 Popen 对象用于实时输出)"""
-        cmd = ["docker", "compose", "logs"]
+        cmd = self.get_compose_command() + ["logs"]
+        if not cmd:
+            raise RuntimeError("未检测到 docker compose 或 docker-compose")
         if follow:
             cmd.append("-f")
         if service:
@@ -213,7 +279,7 @@ class DockerManager:
         """获取 PHP 镜像名称"""
         try:
             result = subprocess.run(
-                ["docker", "compose", "images", "php", "--format", "json"],
+                self.get_compose_command() + ["images", "php", "--format", "json"],
                 cwd=str(self.project_path),
                 capture_output=True,
                 text=True,
@@ -323,8 +389,10 @@ class DockerManager:
         while time.monotonic() < deadline:
             try:
                 result = subprocess.run(
-                    ["docker", "compose", "ps", "--status", "running",
-                     "--format", "{{.Service}}", service],
+                    self.get_compose_command() + [
+                        "ps", "--status", "running",
+                        "--format", "{{.Service}}", service
+                    ],
                     cwd=str(self.project_path),
                     capture_output=True, text=True, timeout=5
                 )
@@ -334,3 +402,28 @@ class DockerManager:
                 pass
             time.sleep(1)
         return False
+
+    def ensure_services_running(self, services: List[str], timeout: int = 12) -> DockerResult:
+        """确认指定服务都已进入 running 状态"""
+        missing = []
+        for service in services:
+            if not self.wait_until_running(service, timeout=timeout):
+                missing.append(service)
+
+        if not missing:
+            return DockerResult(success=True)
+
+        detail = ", ".join(missing)
+        error = f"服务未完全启动成功，未运行的容器: {detail}"
+
+        port = self.get_project_port()
+        if "nginx" in missing and port:
+            error += f"\n\n可能原因: 宿主机端口 {port} 冲突，或 nginx 配置启动失败。"
+            return DockerResult(
+                success=False,
+                error=error,
+                port_conflict=True,
+                port_conflict_detail=f"宿主机端口 {port} 可能冲突",
+            )
+
+        return DockerResult(success=False, error=error)
