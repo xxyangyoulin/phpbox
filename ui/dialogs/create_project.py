@@ -2,15 +2,20 @@
 import os
 import shutil
 from typing import List, Optional
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QApplication, QStackedWidget, QWidget, QFileDialog
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QApplication, QStackedWidget,
+    QWidget, QFileDialog, QFrame, QSizePolicy
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen
 from pathlib import Path
 
 from qfluentwidgets import (
     SubtitleLabel, BodyLabel, CaptionLabel, StrongBodyLabel,
     LineEdit, PushButton, PrimaryPushButton, CheckBox,
     ComboBox, SpinBox, CardWidget, TextEdit, FluentIcon as FIF,
-    InfoBar, InfoBarPosition, Pivot, SegmentedWidget
+    InfoBar, InfoBarPosition, SegmentedWidget, isDarkTheme,
+    TransparentToolButton, ScrollArea
 )
 
 from core.config import BASE_DIR, PHP_VERSIONS, DEFAULT_PORT, ensure_base_dir
@@ -22,6 +27,189 @@ from core.settings import Settings
 from ui.widgets.extension_selector import ExtensionSelector
 from ui.styles import FluentDialog
 from ui.dialogs.build_progress import BuildProgressDialog
+
+
+class StepIndicator(QWidget):
+    """横向步骤指示器：圆圈数字 + 文字 + 连接线"""
+
+    def __init__(self, steps: List[str], parent=None):
+        super().__init__(parent)
+        self._steps = steps
+        self._current = 0
+        self.setFixedHeight(64)
+
+    def set_step(self, index: int):
+        self._current = index
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        dark = isDarkTheme()
+        n = len(self._steps)
+        w, h = self.width(), self.height()
+        r = 14  # 圆圈半径
+        step_w = w / n
+        cx_list = [int(step_w * i + step_w / 2) for i in range(n)]
+        cy = 20
+
+        color_done   = QColor("#0078d4")
+        color_active = QColor("#0078d4")
+        color_todo   = QColor("#94a3b8") if not dark else QColor("#475569")
+        color_line   = QColor("#cbd5e1") if not dark else QColor("#334155")
+        color_text_active = QColor("#0078d4")
+        color_text_done   = QColor("#0078d4")
+        color_text_todo   = QColor("#94a3b8") if not dark else QColor("#64748b")
+
+        # 连接线
+        for i in range(n - 1):
+            x1 = cx_list[i] + r
+            x2 = cx_list[i + 1] - r
+            painter.setPen(QPen(color_line, 2))
+            painter.drawLine(x1, cy, x2, cy)
+
+        # 圆圈 + 数字
+        for i, label in enumerate(self._steps):
+            cx = cx_list[i]
+            if i < self._current:
+                # 已完成：实心蓝圆 + 白色勾
+                painter.setBrush(color_done)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(cx - r, cy - r, r * 2, r * 2)
+                painter.setPen(QPen(QColor("white"), 2))
+                painter.setFont(QFont("", 10, QFont.Weight.Bold))
+                painter.drawText(cx - r, cy - r, r * 2, r * 2,
+                                 Qt.AlignmentFlag.AlignCenter, "✓")
+            elif i == self._current:
+                # 当前：蓝色描边圆 + 蓝色数字
+                painter.setBrush(QColor("#e8f4fd") if not dark else QColor("#1e3a5f"))
+                painter.setPen(QPen(color_active, 2))
+                painter.drawEllipse(cx - r, cy - r, r * 2, r * 2)
+                painter.setPen(color_active)
+                painter.setFont(QFont("", 9, QFont.Weight.Bold))
+                painter.drawText(cx - r, cy - r, r * 2, r * 2,
+                                 Qt.AlignmentFlag.AlignCenter, str(i + 1))
+            else:
+                # 未到达：灰色圆 + 灰色数字
+                painter.setBrush(QColor("#f1f5f9") if not dark else QColor("#1e293b"))
+                painter.setPen(QPen(color_todo, 1))
+                painter.drawEllipse(cx - r, cy - r, r * 2, r * 2)
+                painter.setPen(color_todo)
+                painter.setFont(QFont("", 9))
+                painter.drawText(cx - r, cy - r, r * 2, r * 2,
+                                 Qt.AlignmentFlag.AlignCenter, str(i + 1))
+
+            # 步骤文字
+            if i < self._current:
+                color_txt = color_text_done
+                font = QFont("", 9)
+            elif i == self._current:
+                color_txt = color_text_active
+                font = QFont("", 9, QFont.Weight.Bold)
+            else:
+                color_txt = color_text_todo
+                font = QFont("", 9)
+
+            painter.setFont(font)
+            painter.setPen(color_txt)
+            painter.drawText(cx - 60, cy + r + 4, 120, 20,
+                             Qt.AlignmentFlag.AlignCenter, label)
+
+        painter.end()
+
+
+# 框架图标映射（使用 FIF 图标）
+_FRAMEWORK_ICONS = {
+    "通用":     FIF.CODE,
+    "Laravel":  FIF.LEAF,
+    "ThinkPHP": FIF.DEVELOPER_TOOLS,
+}
+_FRAMEWORK_DESCS = {
+    "通用":     "通用 PHP 项目，\n灵活配置",
+    "Laravel":  "Laravel 框架，\n含伪静态规则",
+    "ThinkPHP": "ThinkPHP 框架，\n国内常用",
+}
+
+
+class FrameworkCard(QWidget):
+    """框架选择卡片"""
+    clicked = pyqtSignal(str)
+
+    def __init__(self, framework: str, parent=None):
+        super().__init__(parent)
+        self.framework = framework
+        self._selected = False
+        self._hovered = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(140, 100)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        from qfluentwidgets import IconWidget
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(6)
+        layout.setContentsMargins(8, 12, 8, 10)
+
+        icon_w = IconWidget(_FRAMEWORK_ICONS.get(self.framework, FIF.CODE), self)
+        icon_w.setFixedSize(28, 28)
+
+        name_lbl = StrongBodyLabel(self.framework, self)
+        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        desc_lbl = CaptionLabel(_FRAMEWORK_DESCS.get(self.framework, ""), self)
+        desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc_lbl.setWordWrap(True)
+
+        layout.addWidget(icon_w, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(name_lbl, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(desc_lbl, 0, Qt.AlignmentFlag.AlignCenter)
+
+    def set_selected(self, selected: bool):
+        self._selected = selected
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        dark = isDarkTheme()
+
+        if self._selected:
+            border_color = QColor("#0078d4")
+            bg_color = QColor("#dbeafe") if not dark else QColor("#1e3a5f")
+            border_w = 2
+        elif self._hovered:
+            border_color = QColor("#0078d4")
+            bg_color = QColor("#f8fafc") if not dark else QColor("#1e293b")
+            border_w = 1
+        else:
+            border_color = QColor("#cbd5e1") if not dark else QColor("#334155")
+            bg_color = QColor("#ffffff") if not dark else QColor("#1e293b")
+            border_w = 1
+
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.setBrush(bg_color)
+        painter.setPen(QPen(border_color, border_w))
+        painter.drawRoundedRect(rect, 8, 8)
+        painter.end()
+        super().paintEvent(event)
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.framework)
+        super().mousePressEvent(event)
 
 
 class BuildWorker(QThread):
@@ -94,7 +282,9 @@ class BuildWorker(QThread):
 
 
 class CreateProjectDialog(FluentDialog):
-    """创建项目对话框 - 三步向导式"""
+    """创建项目对话框 - 两步向导式"""
+
+    _STEPS = ["基本信息", "PHP 扩展"]
 
     # 信号：项目创建成功
     project_created = pyqtSignal(str)  # project_name
@@ -102,52 +292,54 @@ class CreateProjectDialog(FluentDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("创建新项目")
-        self.setMinimumSize(700, 600)
+        self.setMinimumSize(680, 580)
         self.project_manager = ProjectManager()
         self._current_step = 0
         self._created_project_name: Optional[str] = None
         self.setup_ui()
-        self.auto_assign_port()  # 自动分配可用端口
+        self.auto_assign_port()
         self.detect_proxy()
 
     def get_created_project_name(self) -> Optional[str]:
-        """获取成功创建的项目名"""
         return self._created_project_name
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(24, 20, 24, 24)
+        layout.setSpacing(12)
+        layout.setContentsMargins(28, 20, 28, 24)
 
-        # 顶部步骤指示器
-        self.pivot = Pivot(self)
-        self.pivot.addItem(routeKey="basic", text="1. 基本信息", onClick=lambda: self._switch_to(0))
-        self.pivot.addItem(routeKey="proxy", text="2. 代理配置", onClick=lambda: self._switch_to(1))
-        self.pivot.addItem(routeKey="extensions", text="3. PHP 扩展", onClick=lambda: self._switch_to(2))
-        layout.addWidget(self.pivot)
+        # 步骤指示器
+        self.step_indicator = StepIndicator(self._STEPS, self)
+        layout.addWidget(self.step_indicator)
+
+        # 分隔线
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #e2e8f0;")
+        layout.addWidget(sep)
 
         # 页面容器
         self.stacked_widget = QStackedWidget()
         layout.addWidget(self.stacked_widget, 1)
 
-        # 创建三个页面
+        # 两个页面
         self.stacked_widget.addWidget(self._create_basic_page())
-        self.stacked_widget.addWidget(self._create_proxy_page())
         self.stacked_widget.addWidget(self._create_extensions_page())
 
-        # 底部导航按钮
+        # 底部按钮
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        self.prev_btn = PushButton("上一步")
+        self.cancel_btn = PushButton("取消")
+        self.cancel_btn.clicked.connect(self.reject)
+
+        self.prev_btn = PushButton(FIF.LEFT_ARROW, "上一步")
         self.prev_btn.clicked.connect(self._prev_step)
         self.prev_btn.setVisible(False)
 
         self.next_btn = PrimaryPushButton("下一步")
+        self.next_btn.setIcon(FIF.RIGHT_ARROW)
         self.next_btn.clicked.connect(self._next_step)
-
-        self.cancel_btn = PushButton("取消")
-        self.cancel_btn.clicked.connect(self.reject)
 
         self.create_btn = PrimaryPushButton(FIF.ADD, "创建项目")
         self.create_btn.clicked.connect(self.create_project)
@@ -160,80 +352,142 @@ class CreateProjectDialog(FluentDialog):
         btn_layout.addWidget(self.create_btn)
         layout.addLayout(btn_layout)
 
-        # 初始状态
         self._update_buttons()
-        self.pivot.setCurrentItem("basic")
 
     def _create_basic_page(self) -> QWidget:
-        """创建基本信息页面"""
-        from PyQt6.QtWidgets import QFileDialog
-        import shutil
-
+        """基本信息页面：项目名 / PHP版本 / 框架卡片 / 可折叠高级设置"""
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setSpacing(16)
+        outer = QVBoxLayout(page)
+        outer.setSpacing(12)
+        outer.setContentsMargins(0, 4, 0, 0)
 
-        card = CardWidget()
-        card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(16)
-        card_layout.setContentsMargins(20, 20, 20, 20)
+        scroll = ScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent; border: none;")
 
-        # 项目类型选择
-        type_layout = QHBoxLayout()
-        type_layout.addWidget(BodyLabel("项目类型:"))
+        inner_w = QWidget()
+        inner_w.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(inner_w)
+        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 4, 0)
+
+        # ── 基本信息卡片 ─────────────────────────────────────
+        basic_card = CardWidget()
+        bc_layout = QVBoxLayout(basic_card)
+        bc_layout.setSpacing(14)
+        bc_layout.setContentsMargins(20, 18, 20, 18)
+
+        # 项目类型
+        type_row = QHBoxLayout()
+        type_row.addWidget(BodyLabel("项目类型"))
         self.project_type_segment = SegmentedWidget()
         self.project_type_segment.addItem("new", "新建项目", lambda: self.on_project_type_changed(0))
         self.project_type_segment.addItem("import", "导入已有项目", lambda: self.on_project_type_changed(1))
         self.project_type_segment.setCurrentItem("new")
-        type_layout.addWidget(self.project_type_segment)
-        type_layout.addStretch()
-        card_layout.addLayout(type_layout)
+        type_row.addWidget(self.project_type_segment)
+        type_row.addStretch()
+        bc_layout.addLayout(type_row)
 
         # 导入源目录（仅导入时显示）
-        self.src_dir_layout = QHBoxLayout()
-        self.src_dir_label = BodyLabel("源目录:")
-        self.src_dir_layout.addWidget(self.src_dir_label)
+        self._src_dir_widget = QWidget()
+        src_row = QHBoxLayout(self._src_dir_widget)
+        src_row.setContentsMargins(0, 0, 0, 0)
+        src_row.addWidget(BodyLabel("源目录"))
         self.src_dir_input = LineEdit()
         self.src_dir_input.setPlaceholderText("选择要导入的 PHP 项目目录")
         self.src_dir_input.setReadOnly(True)
-        self.src_dir_layout.addWidget(self.src_dir_input, 1)
+        src_row.addWidget(self.src_dir_input, 1)
         self.src_dir_btn = PushButton("浏览")
         self.src_dir_btn.clicked.connect(self.browse_src_directory)
-        self.src_dir_layout.addWidget(self.src_dir_btn)
-        card_layout.addLayout(self.src_dir_layout)
+        src_row.addWidget(self.src_dir_btn)
+        bc_layout.addWidget(self._src_dir_widget)
 
-        # 项目名
-        name_layout = QHBoxLayout()
-        name_layout.addWidget(BodyLabel("项目名称:"))
+        # 项目名称
+        name_row = QHBoxLayout()
+        name_row.addWidget(BodyLabel("项目名称"))
         self.name_input = LineEdit()
         self.name_input.setPlaceholderText("仅允许字母、数字、下划线和连字符")
-        self.name_input.textChanged.connect(self.check_port)  # 名称改变时重新检查端口
-        name_layout.addWidget(self.name_input, 1)
-        card_layout.addLayout(name_layout)
+        self.name_input.textChanged.connect(self.check_port)
+        name_row.addWidget(self.name_input, 1)
+        bc_layout.addLayout(name_row)
 
         # PHP 版本
-        php_layout = QHBoxLayout()
-        php_layout.addWidget(BodyLabel("PHP 版本:"))
+        php_row = QHBoxLayout()
+        php_row.addWidget(BodyLabel("PHP 版本"))
         self.php_combo = ComboBox()
         self.php_combo.addItems(PHP_VERSIONS)
         self.php_combo.setCurrentText("8.2")
-        php_layout.addWidget(self.php_combo)
-        php_layout.addStretch()
-        card_layout.addLayout(php_layout)
+        self.php_combo.setMinimumWidth(100)
+        php_row.addWidget(self.php_combo)
+        php_row.addStretch()
+        bc_layout.addLayout(php_row)
 
-        # 框架选择（仅新建时显示）
-        self.framework_layout = QHBoxLayout()
-        self.framework_label = BodyLabel("框架:")
-        self.framework_layout.addWidget(self.framework_label)
-        self.framework_combo = ComboBox()
-        self.framework_combo.addItems(["通用", "Laravel", "ThinkPHP"])
-        self.framework_layout.addWidget(self.framework_combo)
-        self.framework_layout.addStretch()
-        card_layout.addLayout(self.framework_layout)
+        layout.addWidget(basic_card)
+
+        # ── 框架选择卡片 ─────────────────────────────────────
+        framework_card = CardWidget()
+        fc_layout = QVBoxLayout(framework_card)
+        fc_layout.setSpacing(10)
+        fc_layout.setContentsMargins(20, 16, 20, 16)
+        fc_layout.addWidget(BodyLabel("框架"))
+
+        fw_row = QHBoxLayout()
+        fw_row.setSpacing(12)
+        self._framework_cards: dict[str, FrameworkCard] = {}
+        for fw in ["通用", "Laravel", "ThinkPHP"]:
+            fc = FrameworkCard(fw, self)
+            fc.clicked.connect(self._select_framework)
+            fw_row.addWidget(fc)
+            self._framework_cards[fw] = fc
+        fw_row.addStretch()
+        fc_layout.addLayout(fw_row)
+
+        self._selected_framework = "通用"
+        self._framework_cards["通用"].set_selected(True)
+
+        # 框架卡片仅新建时显示
+        self._framework_card_widget = framework_card
+        layout.addWidget(framework_card)
+
+        # ── 高级设置（可折叠）────────────────────────────────
+        adv_card = CardWidget()
+        adv_outer = QVBoxLayout(adv_card)
+        adv_outer.setContentsMargins(20, 10, 20, 10)
+        adv_outer.setSpacing(0)
+
+        # 折叠标题行
+        adv_header = QWidget()
+        adv_header.setCursor(Qt.CursorShape.PointingHandCursor)
+        adv_h_row = QHBoxLayout(adv_header)
+        adv_h_row.setContentsMargins(0, 4, 0, 4)
+        adv_title = StrongBodyLabel("高级设置")
+        adv_hint = CaptionLabel("端口 / 代理")
+        adv_hint.setStyleSheet("color: #64748b;")
+        self._adv_toggle_btn = TransparentToolButton(FIF.CHEVRON_RIGHT, self)
+        self._adv_toggle_btn.setFixedSize(20, 20)
+        adv_h_row.addWidget(adv_title)
+        adv_h_row.addWidget(adv_hint)
+        adv_h_row.addStretch()
+        adv_h_row.addWidget(self._adv_toggle_btn)
+        adv_outer.addWidget(adv_header)
+
+        # 折叠内容
+        self._adv_content = QWidget()
+        self._adv_content.setVisible(False)
+        adv_c_layout = QVBoxLayout(self._adv_content)
+        adv_c_layout.setSpacing(12)
+        adv_c_layout.setContentsMargins(0, 8, 0, 4)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("color: #e2e8f0;")
+        adv_c_layout.addWidget(sep2)
 
         # 端口
-        port_layout = QHBoxLayout()
-        port_layout.addWidget(BodyLabel("端口:"))
+        port_row = QHBoxLayout()
+        port_row.addWidget(BodyLabel("端口"))
         self.port_spin = SpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(DEFAULT_PORT)
@@ -241,30 +495,70 @@ class CreateProjectDialog(FluentDialog):
         self.port_auto_btn = PushButton("自动分配")
         self.port_auto_btn.clicked.connect(self.auto_assign_port)
         self.port_status = CaptionLabel()
-        port_layout.addWidget(self.port_spin)
-        port_layout.addWidget(self.port_auto_btn)
-        port_layout.addWidget(self.port_status)
-        port_layout.addStretch()
-        card_layout.addLayout(port_layout)
+        port_row.addWidget(self.port_spin)
+        port_row.addWidget(self.port_auto_btn)
+        port_row.addWidget(self.port_status)
+        port_row.addStretch()
+        adv_c_layout.addLayout(port_row)
 
-        layout.addWidget(card)
+        # 代理
+        adv_c_layout.addWidget(BodyLabel("构建代理"))
+        proxy_hint = CaptionLabel("加速 Docker 构建时的扩展下载，如无需要可留空")
+        proxy_hint.setStyleSheet("color: #64748b;")
+        adv_c_layout.addWidget(proxy_hint)
+
+        self.use_settings_proxy_cb = CheckBox("使用全局设置中的代理")
+        self.use_settings_proxy_cb.stateChanged.connect(self.on_use_settings_proxy_changed)
+        adv_c_layout.addWidget(self.use_settings_proxy_cb)
+
+        self.auto_proxy_cb = CheckBox("使用系统代理")
+        self.auto_proxy_cb.stateChanged.connect(self.on_auto_proxy_changed)
+        adv_c_layout.addWidget(self.auto_proxy_cb)
+
+        proxy_manual_row = QHBoxLayout()
+        proxy_manual_row.addWidget(BodyLabel("手动配置"))
+        self.proxy_input = LineEdit()
+        self.proxy_input.setPlaceholderText("例如: http://127.0.0.1:7890")
+        self.proxy_input.textChanged.connect(self.update_proxy_info)
+        proxy_manual_row.addWidget(self.proxy_input, 1)
+        adv_c_layout.addLayout(proxy_manual_row)
+
+        self.proxy_converted = CaptionLabel()
+        self.proxy_converted.setStyleSheet("color: #64748b;")
+        adv_c_layout.addWidget(self.proxy_converted)
+
+        adv_outer.addWidget(self._adv_content)
+        layout.addWidget(adv_card)
+
+        # 折叠点击事件
+        self._adv_expanded = False
+        adv_header.mousePressEvent = lambda e: self._toggle_advanced()
+        self._adv_toggle_btn.clicked.connect(self._toggle_advanced)
+
         layout.addStretch()
+        scroll.setWidget(inner_w)
+        outer.addWidget(scroll)
 
-        # 初始状态：隐藏导入相关控件
         self.on_project_type_changed(0)
-
         return page
 
+    def _toggle_advanced(self):
+        self._adv_expanded = not self._adv_expanded
+        self._adv_content.setVisible(self._adv_expanded)
+        icon = FIF.CHEVRON_DOWN_MED if self._adv_expanded else FIF.CHEVRON_RIGHT
+        self._adv_toggle_btn.setIcon(icon)
+
+    def _select_framework(self, framework: str):
+        self._selected_framework = framework
+        for fw, fc in self._framework_cards.items():
+            fc.set_selected(fw == framework)
+
     def on_project_type_changed(self, index: int):
-        """项目类型改变时切换显示"""
         is_import = index == 1
 
-        # 显示/隐藏源目录
-        self.src_dir_label.setVisible(is_import)
-        self.src_dir_input.setVisible(is_import)
-        self.src_dir_btn.setVisible(is_import)
+        self._src_dir_widget.setVisible(is_import)
+        self._framework_card_widget.setVisible(not is_import)
 
-        # 导入时自动填充项目名
         if is_import and self.src_dir_input.text():
             src_path = Path(self.src_dir_input.text())
             self.name_input.setText(src_path.name)
@@ -284,49 +578,6 @@ class CreateProjectDialog(FluentDialog):
                 # 自动填充项目名
                 dir_name = Path(path).name
                 self.name_input.setText(dir_name)
-
-    def _create_proxy_page(self) -> QWidget:
-        """创建代理配置页面"""
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setSpacing(16)
-
-        card = CardWidget()
-        card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(16)
-        card_layout.setContentsMargins(20, 20, 20, 20)
-
-        # 提示
-        hint = CaptionLabel("代理用于加速 Docker 构建时下载 PHP 扩展，如无需要可跳过")
-        hint.setStyleSheet("color: #64748b;")
-        card_layout.addWidget(hint)
-
-        # 使用设置中的代理
-        self.use_settings_proxy_cb = CheckBox("使用全局设置中的代理")
-        self.use_settings_proxy_cb.stateChanged.connect(self.on_use_settings_proxy_changed)
-        card_layout.addWidget(self.use_settings_proxy_cb)
-
-        # 使用系统代理
-        self.auto_proxy_cb = CheckBox("使用系统代理")
-        self.auto_proxy_cb.stateChanged.connect(self.on_auto_proxy_changed)
-        card_layout.addWidget(self.auto_proxy_cb)
-
-        # 手动配置
-        manual_layout = QHBoxLayout()
-        manual_layout.addWidget(BodyLabel("手动配置:"))
-        self.proxy_input = LineEdit()
-        self.proxy_input.setPlaceholderText("例如: http://127.0.0.1:7890")
-        manual_layout.addWidget(self.proxy_input, 1)
-        card_layout.addLayout(manual_layout)
-
-        self.proxy_converted = CaptionLabel()
-        card_layout.addWidget(self.proxy_converted)
-
-        self.proxy_input.textChanged.connect(self.update_proxy_info)
-
-        layout.addWidget(card)
-        layout.addStretch()
-        return page
 
     def _create_extensions_page(self) -> QWidget:
         """创建扩展选择页面"""
@@ -350,32 +601,23 @@ class CreateProjectDialog(FluentDialog):
         return page
 
     def _switch_to(self, step: int):
-        """切换到指定步骤"""
         self._current_step = step
         self.stacked_widget.setCurrentIndex(step)
+        self.step_indicator.set_step(step)
         self._update_buttons()
-        self._update_pivot()
 
     def _next_step(self):
-        """下一步"""
-        if self._current_step < 2:
+        if self._current_step < 1:
             self._switch_to(self._current_step + 1)
 
     def _prev_step(self):
-        """上一步"""
         if self._current_step > 0:
             self._switch_to(self._current_step - 1)
 
     def _update_buttons(self):
-        """更新按钮状态"""
         self.prev_btn.setVisible(self._current_step > 0)
-        self.next_btn.setVisible(self._current_step < 2)
-        self.create_btn.setVisible(self._current_step == 2)
-
-    def _update_pivot(self):
-        """更新步骤指示器"""
-        keys = ["basic", "proxy", "extensions"]
-        self.pivot.setCurrentItem(keys[self._current_step])
+        self.next_btn.setVisible(self._current_step < 1)
+        self.create_btn.setVisible(self._current_step == 1)
 
     def detect_proxy(self):
         """检测并加载代理设置"""
@@ -525,7 +767,7 @@ class CreateProjectDialog(FluentDialog):
         php_version = self.php_combo.currentText()
         extensions = self.ext_selector.get_selected_extensions()
         proxy = self.proxy_input.text().strip()
-        framework = self.framework_combo.currentText()
+        framework = self._selected_framework
         src_path = Path(src_dir) if is_import else None
 
         # 保存项目名用于创建成功后选中

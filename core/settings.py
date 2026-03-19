@@ -7,7 +7,7 @@ class Settings:
     """应用设置管理"""
 
     def __init__(self):
-        self.settings = QSettings("PHPDev", "phpbox")
+        self.settings = QSettings("phpbox", "phpbox")
 
     def get_proxy(self) -> Optional[str]:
         """获取代理设置"""
@@ -45,3 +45,11 @@ class Settings:
     def set_theme(self, theme: str):
         """设置主题"""
         self.settings.setValue("theme", theme)
+
+    def is_first_launch(self) -> bool:
+        """是否首次启动（从未配置过代理）"""
+        return not self.settings.value("app/proxy_prompted", False, type=bool)
+
+    def mark_proxy_prompted(self):
+        """记录已提示过代理配置"""
+        self.settings.setValue("app/proxy_prompted", True)

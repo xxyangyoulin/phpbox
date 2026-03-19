@@ -32,6 +32,7 @@ from ui.dialogs.create_project import CreateProjectDialog
 from ui.dialogs.log_viewer import LogViewerDialog
 from ui.dialogs.install_ext import InstallExtDialog
 from ui.dialogs.settings import SettingsDialog
+from core.settings import Settings
 from ui.dialogs.config_editor import ConfigEditorDialog
 from ui.dialogs.xdebug_dialog import XdebugDialog
 from ui.dialogs.php_config_dialog import PhpConfigDialog, EDITABLE_CONFIGS
@@ -1514,6 +1515,9 @@ class MainWindow(FluentWindow):
         # 初始加载
         self.load_projects()
 
+        # 首次启动代理提示（窗口渲染完成后再弹）
+        QTimer.singleShot(800, self._check_first_launch_proxy)
+
     def update_sidebar_item_state(self, project_name: str, is_running: bool):
         """更新侧边栏某一项的运行状态颜色"""
         route_key = f"proj_{project_name}"
@@ -1688,6 +1692,34 @@ class MainWindow(FluentWindow):
 
     def open_settings(self):
         SettingsDialog(self).exec()
+
+    def _check_first_launch_proxy(self):
+        """首次启动时提示配置代理"""
+        s = Settings()
+        if not s.is_first_launch():
+            return
+        # 已配置过代理则不提示
+        if s.get_proxy():
+            s.mark_proxy_prompted()
+            return
+
+        s.mark_proxy_prompted()
+
+        bar = InfoBar.warning(
+            title="建议配置代理",
+            content="首次使用建议配置 HTTP 代理，以加速 Docker 构建时的 PHP 扩展下载。",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=12000,
+            parent=self
+        )
+        # 在 InfoBar 上追加一个"去设置"按钮
+        from qfluentwidgets import HyperlinkButton
+        btn = PushButton("去设置")
+        btn.setFixedHeight(28)
+        btn.clicked.connect(lambda: (bar.close(), self.open_settings()))
+        bar.addWidget(btn)
 
     def start_all_projects(self):
         """启动所有已停止的项目"""

@@ -1,0 +1,151 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'       # 推送版本 tag 时自动触发，如 v1.2.0
+  workflow_dispatch:   # 也可以在 GitHub 网页上手动触发
+    inputs:
+      version:
+        description: '版本号（如 1.0.0，不带 v 前缀）'
+        required: false
+        default: 'dev'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-xinerama0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xfixes0 libxcb-xkb1 libxkbcommon-x11-0 \
+            libgl1 libegl1 libdbus-1-3 \
+            dpkg-dev libfuse2
+
+      - name: 设置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装 Python 依赖
+        run: pip install -r requirements.txt
+
+      - name: 解析版本号
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.event.inputs.version || 'dev' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 构建二进制 ──────────────────────────────────────────
+      - name: 构建二进制（PyInstaller）
+        run: |
+          rm -rf build/
+          pyinstaller phpbox.spec --noconfirm
+          echo "二进制大小: $(du -sh dist/phpbox | cut -f1)"
+
+      # ── 构建 AppImage ────────────────────────────────────────
+      - name: 下载 appimagetool
+        run: |
+          wget -q \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage \
+            -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+
+      - name: 构建 AppImage
+        run: |
+          APPDIR="AppDir"
+          rm -rf "$APPDIR"
+          mkdir -p "$APPDIR/usr/bin"
+          mkdir -p "$APPDIR/usr/share/applications"
+          mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+
+          cp dist/phpbox "$APPDIR/usr/bin/"
+          cp phpbox.desktop "$APPDIR/usr/share/applications/"
+          ln -sf usr/share/applications/phpbox.desktop "$APPDIR/phpbox.desktop"
+
+          cat > "$APPDIR/AppRun" << 'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          exec "${HERE}/usr/bin/phpbox" "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+
+          if [ -f "resources/icons/phpbox-256.png" ]; then
+            cp resources/icons/phpbox-256.png "$APPDIR/phpbox.png"
+            cp resources/icons/phpbox-256.png \
+               "$APPDIR/usr/share/icons/hicolor/256x256/apps/phpbox.png"
+          else
+            touch "$APPDIR/phpbox.png"
+          fi
+
+          # --appimage-extract-and-run 绕过 CI 环境中 FUSE 不可用的问题
+          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run \
+            "$APPDIR" dist/phpbox-x86_64.AppImage
+          rm -rf "$APPDIR"
+          echo "AppImage 大小: $(du -sh dist/phpbox-x86_64.AppImage | cut -f1)"
+
+      # ── 构建 .deb ────────────────────────────────────────────
+      - name: 构建 .deb 包
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DEB_DIR="deb_package"
+          rm -rf "$DEB_DIR"
+          mkdir -p "$DEB_DIR/DEBIAN"
+          mkdir -p "$DEB_DIR/usr/bin"
+          mkdir -p "$DEB_DIR/usr/share/applications"
+
+          cat > "$DEB_DIR/DEBIAN/control" << EOF
+          Package: phpbox
+          Version: ${VERSION}
+          Section: devel
+          Priority: optional
+          Architecture: amd64
+          Depends: docker-ce | docker.io, docker-compose-plugin
+          Maintainer: phpbox <noreply@github.com>
+          Description: PHP Development Environment Manager
+           A GUI application to manage PHP Docker development environments.
+           Supports multiple PHP versions (7.2-8.4) and 60+ extensions.
+          EOF
+
+          cp dist/phpbox "$DEB_DIR/usr/bin/"
+          cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
+          dpkg-deb --build "$DEB_DIR" "dist/phpbox_${VERSION}_amd64.deb"
+          rm -rf "$DEB_DIR"
+          echo ".deb 大小: $(du -sh dist/phpbox_${VERSION}_amd64.deb | cut -f1)"
+
+      # ── 上传 Artifacts（每次构建都保留）──────────────────────
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: phpbox-linux-x86_64-${{ steps.version.outputs.version }}
+          path: |
+            dist/phpbox
+            dist/phpbox-x86_64.AppImage
+            dist/phpbox_*_amd64.deb
+          retention-days: 30
+
+      # ── 创建 Release（仅 tag 触发时）─────────────────────────
+      - name: 创建 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "phpbox v${{ steps.version.outputs.version }}"
+          generate_release_notes: true   # 自动从 commit 生成 changelog
+          files: |
+            dist/phpbox
+            dist/phpbox-x86_64.AppImage
+            dist/phpbox_*_amd64.deb
