@@ -1,9 +1,10 @@
 """Docker 操作模块"""
+import re
 import time
 import subprocess
 import os
 from pathlib import Path
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Tuple
 from dataclasses import dataclass
 
 
@@ -13,6 +14,8 @@ class DockerResult:
     success: bool
     output: str = ""
     error: str = ""
+    port_conflict: bool = False  # 是否是端口冲突
+    port_conflict_detail: str = ""  # 端口冲突详情
 
 
 class DockerManager:
@@ -99,6 +102,48 @@ class DockerManager:
         if build:
             args.insert(1, "--build")
         return self._run_command(args)
+
+    def get_project_port(self) -> Optional[int]:
+        """获取项目配置的端口
+
+        Returns:
+            端口号，如果无法获取则返回 None
+        """
+        compose_file = self.project_path / "docker-compose.yml"
+        if compose_file.exists():
+            try:
+                content = compose_file.read_text()
+                match = re.search(r'"(\d+):80"', content)
+                if match:
+                    return int(match.group(1))
+            except Exception:
+                pass
+        return None
+
+    def up_with_port_check(self, project_name: str, build: bool = False) -> DockerResult:
+        """启动服务（带端口冲突检查）
+
+        Args:
+            project_name: 项目名称（用于排除自身的端口占用）
+            build: 是否重新构建
+
+        Returns:
+            DockerResult，如果端口冲突则 port_conflict=True
+        """
+        from core.project import get_port_usage
+
+        port = self.get_project_port()
+        if port:
+            usage = get_port_usage(port, project_name)
+            if usage:
+                return DockerResult(
+                    success=False,
+                    error=f"端口 {port} 已被 {usage} 占用",
+                    port_conflict=True,
+                    port_conflict_detail=f"端口 {port} 已被 {usage} 占用"
+                )
+
+        return self.up(build)
 
     def stop(self) -> DockerResult:
         """停止服务"""

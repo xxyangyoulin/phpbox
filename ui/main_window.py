@@ -28,6 +28,7 @@ from qfluentwidgets import (
 
 from core.project import ProjectManager, Project, get_port_usage
 from core.docker import DockerManager
+from ui.dialogs.change_port_dialog import ChangePortDialog
 from ui.dialogs.create_project import CreateProjectDialog
 from ui.dialogs.log_viewer import LogViewerDialog
 from ui.dialogs.install_ext import InstallExtDialog
@@ -369,8 +370,10 @@ class ModernDashboardWidget(ScrollArea):
 
         self.more_menu = RoundMenu(parent=self.more_btn)
         self.rename_action = Action(FIF.EDIT, "项目设置")
+        self.change_port_action = Action(FIF.GLOBE, "修改端口")
         self.delete_action = Action(FIF.DELETE, "删除项目")
         self.more_menu.addAction(self.rename_action)
+        self.more_menu.addAction(self.change_port_action)
         self.more_menu.addAction(self.delete_action)
         self.more_btn.clicked.connect(
             lambda: self.more_menu.exec(self.more_btn.mapToGlobal(self.more_btn.rect().bottomLeft()))
@@ -831,6 +834,7 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.clear_logs_btn.clicked.connect(self.clear_logs)
         self.dashboard.code_log_btn.clicked.connect(self.open_code_log_terminal)
         self.dashboard.rename_action.triggered.connect(self.rename_project)
+        self.dashboard.change_port_action.triggered.connect(self.change_port)
         layout.addWidget(self.dashboard, 1)
 
         self.show_project_view(False)
@@ -947,6 +951,7 @@ class ProjectDashboardPage(QWidget):
         ).start()
 
     def restart_project(self):
+        """重启项目（restart 不需要检查端口，因为只是重启容器内的进程）"""
         if not self.current_project:
             return
         project = self.current_project
@@ -1094,6 +1099,20 @@ class ProjectDashboardPage(QWidget):
         if parent:
             parent.load_projects(select_project=new_name)
 
+    def change_port(self):
+        """修改项目端口"""
+        if not self.current_project:
+            return
+
+        dialog = ChangePortDialog(self.current_project, self)
+        dialog.port_changed.connect(self._on_port_changed)
+        dialog.exec()
+
+    def _on_port_changed(self, new_port: int):
+        """端口修改成功回调"""
+        # 刷新当前项目显示
+        self._reload_current()
+
     def open_browser(self):
         if not self.current_project:
             return
@@ -1233,31 +1252,7 @@ class ProjectDashboardPage(QWidget):
             return
 
         p = str(runtime_path)
-        # 检查是否有 .log 文件
-        log_files = list(runtime_path.glob("*.log"))
-        if not log_files:
-            InfoBar.warning(
-                title="提示",
-                content="runtime 目录下没有 .log 文件",
-                orient=Qt.Orientation.Horizontal,
-                parent=self
-            )
-            return
-
-        # 使用后台任务方式监听日志，每5秒检查新文件
-        cmd = f"""cd '{p}' && \
-tracked="" && \
-while true; do \
-  current=$(ls *.log 2>/dev/null | sort); \
-  new=$(echo "$current" | grep -vxF "$tracked"); \
-  if [ -n "$new" ]; then \
-    echo "$new" | while read f; do \
-      [ -n "$f" ] && tail -F "$f" 2>/dev/null & \
-    done; \
-    tracked="$current"; \
-  fi; \
-  sleep 5; \
-done"""
+        cmd = f"cd '{p}' && find . -type f -name '*.log' -exec tail -F {{}} +"
         terminal = os.environ.get("TERMINAL") or "x-terminal-emulator"
 
         self._launch_terminal([

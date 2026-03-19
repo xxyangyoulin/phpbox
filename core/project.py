@@ -255,6 +255,21 @@ class ProjectManager:
 
             # 如果之前是运行状态，重新启动并更新容器内的 zsh 提示符
             if was_running:
+                # 检查端口是否被占用
+                port = None
+                compose_file = new_path / "docker-compose.yml"
+                if compose_file.exists():
+                    content = compose_file.read_text()
+                    match = re.search(r'"(\d+):80"', content)
+                    if match:
+                        port = int(match.group(1))
+
+                if port:
+                    usage = get_port_usage(port, new_name)
+                    if usage:
+                        print(f"警告: 端口 {port} 已被 {usage} 占用，跳过重启")
+                        return True  # 重命名成功，但不重启
+
                 # 启动容器
                 subprocess.run(
                     ["docker", "compose", "up", "-d"],
@@ -280,6 +295,41 @@ class ProjectManager:
             print(f"重命名项目失败: {e}")
             return False
 
+    def set_port(self, project: Project, new_port: int) -> bool:
+        """修改项目端口
+
+        Args:
+            project: 项目对象
+            new_port: 新端口号
+
+        Returns:
+            是否成功
+        """
+        compose_file = project.path / "docker-compose.yml"
+        env_file = project.path / ".env"
+
+        if not compose_file.exists():
+            return False
+
+        try:
+            # 修改 docker-compose.yml 中的端口映射
+            content = compose_file.read_text()
+            content = re.sub(r'"(\d+):80"', f'"{new_port}:80"', content)
+            compose_file.write_text(content)
+
+            # 修改 .env 文件中的 PORT
+            if env_file.exists():
+                env_content = env_file.read_text()
+                env_content = re.sub(r'PORT=\d+', f'PORT={new_port}', env_content)
+                env_file.write_text(env_content)
+
+            # 更新 project 对象
+            project.port = str(new_port)
+            return True
+        except Exception as e:
+            print(f"修改端口失败: {e}")
+            return False
+
 
 def get_port_usage(port: int, exclude_project_name: Optional[str] = None) -> Optional[str]:
     """检查端口占用情况，返回占用进程名或 None
@@ -292,7 +342,7 @@ def get_port_usage(port: int, exclude_project_name: Optional[str] = None) -> Opt
     if BASE_DIR.exists():
         for item in sorted(BASE_DIR.iterdir()):
             if item.is_dir():
-                # 排除当前正在创建的项目
+                # 排除当前项目
                 if exclude_project_name and item.name == exclude_project_name:
                     continue
                 # 检查项目的 .env 文件中的端口配置
@@ -308,8 +358,36 @@ def get_port_usage(port: int, exclude_project_name: Optional[str] = None) -> Opt
                     except Exception:
                         pass
 
-    # 检查系统中实际占用的端口
+    # 检查系统中实际占用的端口（排除 docker 容器）
     try:
+        # 获取所有 docker 容器的端口映射
+        docker_result = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}} {{.Ports}}"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        docker_ports = {}  # port -> container_name
+        for line in docker_result.stdout.strip().splitlines():
+            parts = line.split(maxsplit=1)
+            if len(parts) == 2:
+                container_name = parts[0]
+                ports_str = parts[1]
+                # 解析端口映射，格式如: 0.0.0.0:8081->80/tcp
+                for match in re.finditer(r'0\.0\.0\.0:(\d+)->', ports_str):
+                    docker_port = int(match.group(1))
+                    docker_ports[docker_port] = container_name
+
+        # 如果端口被 docker 容器占用
+        if port in docker_ports:
+            container_name = docker_ports[port]
+            # 如果是当前项目的容器，不算冲突
+            if exclude_project_name and container_name.startswith(f"phpdev-{exclude_project_name}-"):
+                return None
+            # 其他 docker 容器占用
+            return f"Docker 容器「{container_name}」"
+
+        # 检查非 docker 进程占用的端口
         result = subprocess.run(
             ["ss", "-tlnp"],
             capture_output=True,
@@ -320,7 +398,12 @@ def get_port_usage(port: int, exclude_project_name: Optional[str] = None) -> Opt
             m = re.search(r':(\d+)\s', line)
             if m and int(m.group(1)) == port:
                 match = re.search(r'users:\(\("([^"]+)"', line)
-                return match.group(1) if match else "未知进程"
+                process_name = match.group(1) if match else "未知进程"
+                # 排除 docker 相关进程（docker-proxy 等）
+                if 'docker' in process_name.lower():
+                    # docker 进程占用的端口已经在上面检查过了
+                    continue
+                return process_name
         return None
     except Exception:
         return None

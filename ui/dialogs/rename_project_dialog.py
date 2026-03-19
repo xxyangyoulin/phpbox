@@ -11,7 +11,8 @@ from qfluentwidgets import (
     InfoBar, ProgressRing
 )
 
-from core.project import Project, ProjectManager
+from core.project import Project, ProjectManager, get_port_usage
+from core.docker import DockerManager
 from ui.styles import FluentDialog
 
 
@@ -245,6 +246,19 @@ class RenameProjectDialog(FluentDialog):
     def _async_apply_restart_policy(self, project_path: str):
         """异步应用 restart 策略"""
         try:
+            # 检查端口是否被占用
+            port = None
+            try:
+                port = int(self.project.port)
+            except (ValueError, AttributeError):
+                pass
+
+            if port:
+                usage = get_port_usage(port, self.project.name)
+                if usage:
+                    print(f"端口 {port} 已被 {usage} 占用，跳过重启")
+                    return
+
             subprocess.run(
                 ["docker", "compose", "up", "-d"],
                 cwd=project_path,
