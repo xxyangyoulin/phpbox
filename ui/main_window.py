@@ -269,6 +269,39 @@ class ToolCard(QWidget):
             self._update_style()
 
 
+class OverviewMetricCard(CardWidget):
+    """顶部概览指标卡"""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(4)
+
+        self.title_label = CaptionLabel(title)
+        self.title_label.setStyleSheet(f"color: {themed_color('#64748b', '#94a3b8')};")
+        self.value_label = StrongBodyLabel("--")
+        self.detail_label = CaptionLabel("")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setStyleSheet(f"color: {themed_color('#94a3b8', '#64748b')};")
+
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.value_label)
+        layout.addWidget(self.detail_label)
+
+    def set_content(self, value: str, detail: str = "", tone: str = "normal"):
+        colors = {
+            "normal": themed_color("#0f172a", "#e2e8f0"),
+            "success": "#22c55e",
+            "warning": "#f59e0b",
+            "danger": "#ef4444",
+            "muted": themed_color("#64748b", "#94a3b8"),
+        }
+        self.value_label.setText(value)
+        self.value_label.setStyleSheet(f"color: {colors.get(tone, colors['normal'])}; font-weight: 700;")
+        self.detail_label.setText(detail)
+
+
 class ModernDashboardWidget(ScrollArea):
     """现代项目仪表盘"""
 
@@ -354,6 +387,10 @@ class ModernDashboardWidget(ScrollArea):
         self.stats_line = CaptionLabel("...")
         self.stats_line.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
         info_layout.addWidget(self.stats_line)
+
+        self.health_detail_label = CaptionLabel("...")
+        self.health_detail_label.setStyleSheet(f"color: {themed_color('#94a3b8', '#64748b')};")
+        info_layout.addWidget(self.health_detail_label)
         top_main_layout.addLayout(info_layout, 1)
 
         # 顶部操作按钮 (停止/重启/编辑/删除)
@@ -394,6 +431,7 @@ class ModernDashboardWidget(ScrollArea):
         # 底部操作栏 (Action bar)
         action_bar_layout = QHBoxLayout()
         action_bar_layout.setSpacing(12)
+        self.header_action_layout = action_bar_layout
 
         self.log_btn_header = PrimaryPushButton(FIF.DOCUMENT, "查看日志")
         self.log_btn_header.setCheckable(False)
@@ -401,17 +439,58 @@ class ModernDashboardWidget(ScrollArea):
         self.folder_btn_header.setCheckable(False)
         self.browser_btn = PushButton(FIF.GLOBE, "打开浏览器")
         self.browser_btn.setCheckable(False)
+        self.heal_btn_header = PushButton(FIF.SYNC, "恢复项目")
+        self.heal_btn_header.setCheckable(False)
 
-        for btn in [self.log_btn_header, self.folder_btn_header, self.browser_btn]:
+        for btn in [self.log_btn_header, self.folder_btn_header, self.browser_btn, self.heal_btn_header]:
             btn.setMinimumHeight(32)
 
-        action_bar_layout.addWidget(self.log_btn_header)
-        action_bar_layout.addWidget(self.folder_btn_header)
-        action_bar_layout.addWidget(self.browser_btn)
         action_bar_layout.addStretch(1)
 
         h_layout.addLayout(action_bar_layout)
         layout.addWidget(self.header_card)
+
+        # --- 异常/引导横幅 ---
+        self.alert_card = CardWidget()
+        alert_layout = QHBoxLayout(self.alert_card)
+        alert_layout.setContentsMargins(18, 14, 18, 14)
+        alert_layout.setSpacing(12)
+
+        self.alert_icon = IconWidget(FIF.INFO)
+        self.alert_icon.setFixedSize(18, 18)
+        alert_layout.addWidget(self.alert_icon, 0, Qt.AlignmentFlag.AlignTop)
+
+        alert_text_layout = QVBoxLayout()
+        alert_text_layout.setSpacing(2)
+        self.alert_title = StrongBodyLabel("状态提示")
+        self.alert_desc = CaptionLabel("")
+        self.alert_desc.setWordWrap(True)
+        self.alert_desc.setStyleSheet(f"color: {themed_color('#64748b', '#94a3b8')};")
+        alert_text_layout.addWidget(self.alert_title)
+        alert_text_layout.addWidget(self.alert_desc)
+        alert_layout.addLayout(alert_text_layout, 1)
+
+        self.alert_action_btn = PushButton("查看日志")
+        self.alert_action_btn.setVisible(False)
+        alert_layout.addWidget(self.alert_action_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.alert_card.setVisible(False)
+        layout.addWidget(self.alert_card)
+
+        # --- 概览状态块 ---
+        self.overview_grid = QGridLayout()
+        self.overview_grid.setHorizontalSpacing(16)
+        self.overview_grid.setVerticalSpacing(16)
+        self.health_metric = OverviewMetricCard("容器健康")
+        self.access_metric = OverviewMetricCard("访问地址")
+        self.storage_metric = OverviewMetricCard("项目体积")
+        self.runtime_metric = OverviewMetricCard("运行配置")
+        overview_cards = [
+            self.health_metric, self.access_metric,
+            self.storage_metric, self.runtime_metric,
+        ]
+        for index, card in enumerate(overview_cards):
+            self.overview_grid.addWidget(card, index // 2, index % 2)
+        layout.addLayout(self.overview_grid)
 
         # --- 工具与操作卡片 ---
         self.tools_card = CardWidget()
@@ -468,15 +547,18 @@ class ModernDashboardWidget(ScrollArea):
             group_layout.addWidget(wrapper)
             return group_layout
 
-        env_group = create_tool_group("环境", [self.terminal_btn, self.docker_btn, self.config_btn, self.alias_btn])
-        deps_group = create_tool_group("依赖管理", [self.composer_install_btn, self.composer_update_btn, self.composer_require_btn, self.install_ext_btn])
-        debug_group = create_tool_group("调试与日志", [self.xdebug_btn, self.code_log_btn, self.clear_logs_btn])
+        common_group = create_tool_group(
+            "常用操作",
+            [self.terminal_btn, self.docker_btn, self.config_btn, self.install_ext_btn, self.composer_install_btn]
+        )
+        advanced_group = create_tool_group(
+            "高级操作",
+            [self.alias_btn, self.composer_update_btn, self.composer_require_btn, self.xdebug_btn, self.code_log_btn, self.clear_logs_btn]
+        )
 
-        tools_content_layout.addLayout(env_group)
+        tools_content_layout.addLayout(common_group)
         tools_content_layout.addWidget(HorizontalSeparator())
-        tools_content_layout.addLayout(deps_group)
-        tools_content_layout.addWidget(HorizontalSeparator())
-        tools_content_layout.addLayout(debug_group)
+        tools_content_layout.addLayout(advanced_group)
 
         tools_layout.addLayout(tools_content_layout)
         layout.addWidget(self.tools_card)
@@ -517,6 +599,8 @@ class ModernDashboardWidget(ScrollArea):
             ("error_reporting", "错误报告"),
             ("date.timezone", "时区"),
         ]
+        self._advanced_config_keys = {"max_execution_time", "max_input_time", "max_file_uploads", "error_reporting"}
+        self._advanced_config_widgets = []
 
         for i, (key, label) in enumerate(config_items):
             row = i // 2
@@ -555,8 +639,14 @@ class ModernDashboardWidget(ScrollArea):
             self.config_grid.addWidget(name_label, row, col)
             self.config_grid.addWidget(grid_widget, row, col + 1)
             self.config_labels[key] = value_label
+            if key in self._advanced_config_keys:
+                self._advanced_config_widgets.extend([name_label, grid_widget])
 
         config_layout.addLayout(self.config_grid)
+
+        self.advanced_config_btn = PushButton("显示更多配置")
+        self.advanced_config_btn.clicked.connect(self._toggle_advanced_config)
+        config_layout.addWidget(self.advanced_config_btn, 0, Qt.AlignmentFlag.AlignLeft)
 
         # Xdebug / OPCache 状态行
         status_row = QHBoxLayout()
@@ -587,10 +677,18 @@ class ModernDashboardWidget(ScrollArea):
         self.ext_layout.setSpacing(6)
         self.ext_layout.setContentsMargins(0, 0, 0, 0)
         config_layout.addWidget(self.ext_container)
+        self.ext_toggle_btn = PushButton("展开全部扩展")
+        self.ext_toggle_btn.clicked.connect(self._toggle_extensions)
+        self.ext_toggle_btn.setVisible(False)
+        config_layout.addWidget(self.ext_toggle_btn, 0, Qt.AlignmentFlag.AlignLeft)
 
         layout.addWidget(self.config_card)
 
         layout.addStretch(1)
+        self._extensions_expanded = False
+        self._all_extensions = []
+        self._set_advanced_config_visible(False)
+        self._refresh_header_actions(False, False)
 
     def _copy_path(self, event):
         """点击复制项目路径"""
@@ -612,6 +710,92 @@ class ModernDashboardWidget(ScrollArea):
             if event.button() == Qt.MouseButton.LeftButton:
                 self.config_clicked.emit(config_key)
         return handler
+
+    def _set_advanced_config_visible(self, visible: bool):
+        for widget in self._advanced_config_widgets:
+            widget.setVisible(visible)
+        self.advanced_config_btn.setText("收起更多配置" if visible else "显示更多配置")
+
+    def _toggle_advanced_config(self):
+        visible = not self._advanced_config_widgets[0].isVisible() if self._advanced_config_widgets else False
+        self._set_advanced_config_visible(visible)
+
+    def _toggle_extensions(self):
+        self._extensions_expanded = not self._extensions_expanded
+        self._render_extensions()
+
+    def _render_extensions(self):
+        self.ext_layout.takeAllWidgets()
+        visible_exts = self._all_extensions if self._extensions_expanded else self._all_extensions[:10]
+
+        important_exts = {
+            "pdo", "pdo_mysql", "mysqli", "mysqlnd", "redis", "memcached",
+            "gd", "imagick", "zip", "curl", "mbstring", "json", "xml",
+            "opcache", "xdebug", "intl", "bcmath", "exif", "fileinfo",
+            "openssl", "tokenizer", "ctype", "session", "filter", "hash"
+        }
+
+        for ext in visible_exts:
+            if not ext or ext.startswith("["):
+                continue
+            label = CaptionLabel(ext)
+            label.setFixedHeight(22)
+            if ext.lower() in important_exts or ext.lower().replace("_", "") in important_exts:
+                label.setStyleSheet(
+                    f"background-color: {themed_color('#dbeafe', 'rgba(59,130,246,0.15)')}; "
+                    f"color: {themed_color('#1d4ed8', '#60a5fa')}; "
+                    "border-radius: 4px; padding: 2px 8px; font-weight: bold;"
+                )
+            else:
+                label.setStyleSheet(
+                    f"background-color: {themed_color('#f1f5f9', 'rgba(148,163,184,0.12)')}; "
+                    f"color: {themed_color('#475569', '#94a3b8')}; "
+                    "border-radius: 4px; padding: 2px 8px;"
+                )
+            self.ext_layout.addWidget(label)
+
+        self.ext_toggle_btn.setVisible(len(self._all_extensions) > 10)
+        self.ext_toggle_btn.setText("收起扩展列表" if self._extensions_expanded else "展开全部扩展")
+        QTimer.singleShot(0, lambda: self.ext_layout._doLayout(self.ext_container.rect(), True))
+
+    def _refresh_header_actions(self, is_running: bool, is_partial: bool):
+        while self.header_action_layout.count():
+            item = self.header_action_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.setParent(self)
+        actions = []
+        if is_partial:
+            actions = [self.heal_btn_header, self.log_btn_header, self.folder_btn_header, self.browser_btn]
+        elif is_running:
+            actions = [self.browser_btn, self.log_btn_header, self.folder_btn_header]
+        else:
+            actions = [self.folder_btn_header, self.log_btn_header]
+
+        for widget in actions:
+            widget.setParent(self.header_card)
+            self.header_action_layout.addWidget(widget)
+        self.header_action_layout.addStretch(1)
+
+    def _update_alert(self, project: Project, loading: bool):
+        if loading:
+            self.alert_card.setVisible(True)
+            self.alert_title.setText("正在刷新项目状态")
+            self.alert_desc.setText("正在重新获取容器状态和配置，请稍候。")
+            self.alert_action_btn.setVisible(False)
+            return
+
+        if project.health_status == "partial":
+            self.alert_card.setVisible(True)
+            self.alert_title.setText("项目处于部分运行状态")
+            self.alert_desc.setText(
+                f"{project.health_summary}。建议先查看日志，确认端口冲突、Nginx 配置或容器启动错误。"
+            )
+            self.alert_action_btn.setVisible(True)
+            self.alert_action_btn.setText("查看日志")
+            return
+
+        self.alert_card.setVisible(False)
 
     def update_project(self, project: Project, loading: bool = False, animate: bool = False):
         """更新项目显示
@@ -639,9 +823,10 @@ class ModernDashboardWidget(ScrollArea):
         logs_size = get_dir_size(logs_path) if logs_path.exists() else 0
 
         self.stats_line.setText(
-            f"PHP {project.php_version}  ·  :{project.port}  ·  {format_size(total_size)}  ·  日志 {format_size(logs_size)}  ·  {project.health_summary}"
+            f"PHP {project.php_version}  ·  端口 :{project.port}"
         )
         self.stats_line.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
+        self.health_detail_label.setText(project.health_summary)
         self.path_label.setText(str(project.path))
 
         if loading:
@@ -675,12 +860,49 @@ class ModernDashboardWidget(ScrollArea):
             self.toggle_btn.setIcon(FIF.PLAY)
             self.toggle_btn.setEnabled(True)
 
+        if loading:
+            self.health_metric.set_content("刷新中", "正在重新获取容器状态", "warning")
+        elif project.health_status == "healthy":
+            self.health_metric.set_content("正常", project.health_summary, "success")
+        elif project.health_status == "partial":
+            self.health_metric.set_content("需处理", project.health_summary, "warning")
+        else:
+            self.health_metric.set_content("已停止", project.health_summary, "muted")
+
+        self.access_metric.set_content(
+            f"http://localhost:{project.port}",
+            "浏览器入口" if project.is_running else "项目启动后可直接访问",
+            "normal" if project.is_running else "muted"
+        )
+        self.storage_metric.set_content(
+            format_size(total_size),
+            f"日志 {format_size(logs_size)}",
+            "normal"
+        )
+        runtime_detail = "Xdebug/OPCache 状态将在项目运行后显示"
+        runtime_tone = "muted"
+        if project.health_status == "partial":
+            runtime_detail = "项目异常，建议先执行重启或查看日志"
+            runtime_tone = "warning"
+        elif project.is_running:
+            runtime_detail = "容器运行中，可查看 PHP 配置和扩展"
+            runtime_tone = "success"
+        self.runtime_metric.set_content(f"PHP {project.php_version}", runtime_detail, runtime_tone)
+
+        self._refresh_header_actions(project.is_running, project.health_status == "partial")
+        self._update_alert(project, loading)
+
         # 项目未运行时，配置卡片显示提示，并禁用需要容器的按钮
         if not project.is_running:
             self._clear_php_info()
         for btn in self._running_required_btns:
             btn.setEnabled(project.is_running)
-            btn.setToolTip("" if project.is_running else "需要先启动项目")
+            if project.is_running:
+                btn.setToolTip("")
+            elif project.health_status == "partial":
+                btn.setToolTip("项目处于异常状态，请先恢复或重启")
+            else:
+                btn.setToolTip("需要先启动项目")
 
         # 触发淡入动画（仅在切换项目时）
         if animate:
@@ -695,6 +917,9 @@ class ModernDashboardWidget(ScrollArea):
             if key in EDITABLE_CONFIGS:
                 label.setStyleSheet("font-weight: bold;")
         self.ext_count_label.setText("0 个")
+        self._all_extensions = []
+        self._extensions_expanded = False
+        self.ext_toggle_btn.setVisible(False)
         # 清空扩展标签
         while self.ext_layout.count():
             item = self.ext_layout.takeAt(0)
@@ -737,41 +962,11 @@ class ModernDashboardWidget(ScrollArea):
         )
 
         # 清空旧扩展标签
-        self.ext_layout.takeAllWidgets()
-
         # 添加扩展标签
-        extensions = info.get("extensions", [])
+        extensions = [e for e in sorted(info.get("extensions", [])) if e and not e.startswith("[")]
+        self._all_extensions = extensions
         self.ext_count_label.setText(f"{len(extensions)} 个")
-
-        # 常用扩展高亮
-        important_exts = {
-            "pdo", "pdo_mysql", "mysqli", "mysqlnd", "redis", "memcached",
-            "gd", "imagick", "zip", "curl", "mbstring", "json", "xml",
-            "opcache", "xdebug", "intl", "bcmath", "exif", "fileinfo",
-            "openssl", "tokenizer", "ctype", "session", "filter", "hash"
-        }
-
-        for ext in sorted(extensions):
-            if not ext or ext.startswith("["):
-                continue
-            label = CaptionLabel(ext)
-            label.setFixedHeight(22)
-            if ext.lower() in important_exts or ext.lower().replace("_", "") in important_exts:
-                label.setStyleSheet(
-                    f"background-color: {themed_color('#dbeafe', 'rgba(59,130,246,0.15)')}; "
-                    f"color: {themed_color('#1d4ed8', '#60a5fa')}; "
-                    "border-radius: 4px; padding: 2px 8px; font-weight: bold;"
-                )
-            else:
-                label.setStyleSheet(
-                    f"background-color: {themed_color('#f1f5f9', 'rgba(148,163,184,0.12)')}; "
-                    f"color: {themed_color('#475569', '#94a3b8')}; "
-                    "border-radius: 4px; padding: 2px 8px;"
-                )
-            self.ext_layout.addWidget(label)
-
-        # 延迟触发布局重新计算，确保 widget 完成渲染
-        QTimer.singleShot(0, lambda: self.ext_layout._doLayout(self.ext_container.rect(), True))
+        self._render_extensions()
 
 
 class ProjectDashboardPage(QWidget):
@@ -789,7 +984,28 @@ class ProjectDashboardPage(QWidget):
     def setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setSpacing(12)
+
+        self.global_banner = CardWidget()
+        banner_layout = QHBoxLayout(self.global_banner)
+        banner_layout.setContentsMargins(18, 14, 18, 14)
+        banner_layout.setSpacing(12)
+        banner_icon = IconWidget(FIF.INFO)
+        banner_icon.setFixedSize(18, 18)
+        banner_layout.addWidget(banner_icon, 0, Qt.AlignmentFlag.AlignTop)
+        text_layout = QVBoxLayout()
+        self.global_banner_title = StrongBodyLabel("环境受限")
+        self.global_banner_desc = CaptionLabel("")
+        self.global_banner_desc.setWordWrap(True)
+        self.global_banner_desc.setStyleSheet(f"color: {themed_color('#64748b', '#94a3b8')};")
+        text_layout.addWidget(self.global_banner_title)
+        text_layout.addWidget(self.global_banner_desc)
+        banner_layout.addLayout(text_layout, 1)
+        self.global_banner_btn = PushButton("打开设置")
+        self.global_banner_btn.clicked.connect(self._open_settings_from_banner)
+        banner_layout.addWidget(self.global_banner_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.global_banner.setVisible(False)
+        layout.addWidget(self.global_banner)
 
         # 空状态提示容器
         self.empty_container = QWidget()
@@ -831,6 +1047,7 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.config_btn.clicked.connect(self.edit_config)
         self.dashboard.install_ext_btn.clicked.connect(self.install_extension)
         self.dashboard.browser_btn.clicked.connect(self.open_browser)
+        self.dashboard.heal_btn_header.clicked.connect(self.restart_project)
         self.dashboard.log_btn_header.clicked.connect(self.view_logs)
         self.dashboard.terminal_btn.clicked.connect(self.open_terminal)
         self.dashboard.docker_btn.clicked.connect(self.open_docker_terminal)
@@ -847,9 +1064,26 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.code_log_btn.clicked.connect(self.open_code_log_terminal)
         self.dashboard.rename_action.triggered.connect(self.rename_project)
         self.dashboard.change_port_action.triggered.connect(self.change_port)
+        self.dashboard.alert_action_btn.clicked.connect(self.view_logs)
         layout.addWidget(self.dashboard, 1)
 
         self.show_project_view(False)
+        self.refresh_global_banner()
+
+    def _open_settings_from_banner(self):
+        main_win = self.window()
+        if hasattr(main_win, "open_settings"):
+            main_win.open_settings()
+
+    def refresh_global_banner(self):
+        main_win = self.window()
+        if not hasattr(main_win, "docker_ready") or main_win.docker_ready:
+            self.global_banner.setVisible(False)
+            return
+        self.global_banner_title.setText("Docker 未就绪")
+        self.global_banner_desc.setText("应用已进入受限模式：你仍可浏览项目和编辑配置，但启动、重启、安装扩展等操作暂不可用。")
+        self.global_banner_btn.setText("查看设置")
+        self.global_banner.setVisible(True)
 
     def show_project_view(self, show: bool):
         self.dashboard.setVisible(show)
