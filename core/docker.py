@@ -18,20 +18,66 @@ class DockerResult:
 class DockerManager:
     """Docker 管理器"""
 
+    # compose 命令前缀（自动检测新版插件或旧版独立命令)
+    _COMPOSE_CMD_NEW = ["docker", "compose"]      # 新版插件
+    _COMPOSE_CMD_OLD = ["docker-compose"]           # 旧版独立
+
+    _compose_cmd: List[str] = []
+    _compose_checked: bool = False
+
     def __init__(self, project_path: Path):
         self.project_path = project_path
+        self._detect_compose()
+
+    def _detect_compose(self):
+        """检测可用的 docker compose 命令"""
+        if self._compose_checked:
+            return
+
+        # 优先新版插件语法
+        try:
+            result = subprocess.run(
+                self._COMPOSE_CMD_NEW + ["version"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                self._compose_cmd = self._COMPOSE_CMD_NEW
+                self._compose_checked = True
+                return
+        except Exception:
+            pass
+
+        # 回退旧版独立命令
+        try:
+            result = subprocess.run(
+                self._COMPOSE_CMD_OLD + ["version"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                self._compose_cmd = self._COMPOSE_CMD_OLD
+                self._compose_checked = True
+                return
+        except Exception:
+            pass
+
+        self._compose_checked = True  # 标记已检测过
 
     def _run_command(self, args: List[str], capture: bool = True,
                      env: Optional[dict] = None) -> DockerResult:
         """执行 docker compose 命令"""
-        cmd = ["docker", "compose"] + args
+        if not self._compose_cmd:
+            return DockerResult(
+                success=False,
+                error="未检测到 docker compose 或 docker-compose，请安装其中之一"
+            )
+
         try:
             run_env = os.environ.copy()
             if env:
                 run_env.update(env)
 
             result = subprocess.run(
-                cmd,
+                self._compose_cmd + args,
                 cwd=str(self.project_path),
                 capture_output=capture,
                 text=True,
