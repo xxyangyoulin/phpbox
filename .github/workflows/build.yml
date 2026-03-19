@@ -116,7 +116,7 @@ jobs:
           Section: devel
           Priority: optional
           Architecture: amd64
-          Depends: docker-ce | docker.io, docker-compose-plugin
+          Depends: docker-ce | docker.io
           Maintainer: phpbox <noreply@github.com>
           Description: PHP Development Environment Manager
            A GUI application to manage PHP Docker development environments.

@@ -138,7 +138,7 @@ Version: $VERSION
 Section: devel
 Priority: optional
 Architecture: $ARCH
-Depends: docker-ce | docker.io, docker-compose-plugin
+Depends: docker-ce | docker.io
 Maintainer: Your Name <your@email.com>
 Description: PHP Development Environment Manager
  A GUI application to manage PHP Docker development environments.
