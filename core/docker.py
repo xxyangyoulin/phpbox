@@ -263,7 +263,7 @@ class DockerManager:
 
         port = self.get_project_port()
         if port:
-            usage = get_port_usage(port, project_name)
+            usage = get_port_usage(port, project_name, include_configured_projects=False)
             if usage:
                 return DockerResult(
                     success=False,
@@ -285,7 +285,7 @@ class DockerManager:
             from core.project import get_port_usage
 
             project_name = self.project_path.name
-            usage = get_port_usage(port, project_name)
+            usage = get_port_usage(port, project_name, include_configured_projects=False)
             if usage:
                 return DockerResult(
                     success=False,

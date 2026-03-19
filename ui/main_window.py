@@ -927,7 +927,7 @@ class ProjectDashboardPage(QWidget):
     def _async_check_port_and_start(self, path: str, name: str, port: int):
         """异步检查端口并启动"""
         # 检查端口是否被占用
-        usage = get_port_usage(port, name)
+        usage = get_port_usage(port, name, include_configured_projects=False)
         if usage:
             QTimer.singleShot(0, functools.partial(
                 self._notify, "端口冲突", f"端口 {port} 已被 {usage} 占用", "error"
@@ -1849,7 +1849,7 @@ class MainWindow(FluentWindow):
                 port = int(project.port)
             except ValueError:
                 port = 8080
-            usage = get_port_usage(port, project.name)
+            usage = get_port_usage(port, project.name, include_configured_projects=False)
             if usage:
                 conflict_ports.append((project.name, project.port, usage))
             else:

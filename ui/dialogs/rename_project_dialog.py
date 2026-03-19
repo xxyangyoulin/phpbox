@@ -257,7 +257,7 @@ class RenameProjectDialog(FluentDialog):
                 pass
 
             if port:
-                usage = get_port_usage(port, self.project.name)
+                usage = get_port_usage(port, self.project.name, include_configured_projects=False)
                 if usage:
                     print(f"端口 {port} 已被 {usage} 占用，跳过重启")
                     return

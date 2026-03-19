@@ -300,7 +300,7 @@ class ProjectManager:
                         port = int(match.group(1))
 
                 if port:
-                    usage = get_port_usage(port, new_name)
+                    usage = get_port_usage(port, new_name, include_configured_projects=False)
                     if usage:
                         print(f"警告: 端口 {port} 已被 {usage} 占用，跳过重启")
                         return True  # 重命名成功，但不重启
@@ -367,15 +367,20 @@ class ProjectManager:
             return False
 
 
-def get_port_usage(port: int, exclude_project_name: Optional[str] = None) -> Optional[str]:
+def get_port_usage(
+    port: int,
+    exclude_project_name: Optional[str] = None,
+    include_configured_projects: bool = True
+) -> Optional[str]:
     """检查端口占用情况，返回占用进程名或 None
 
     Args:
         port: 要检查的端口号
         exclude_project_name: 排除的项目名（用于创建项目时不检测自己）
+        include_configured_projects: 是否将已存在项目的端口配置也视为冲突
     """
     # 首先检查已存在项目的配置端口
-    if BASE_DIR.exists():
+    if include_configured_projects and BASE_DIR.exists():
         for item in sorted(BASE_DIR.iterdir()):
             if item.is_dir():
                 # 排除当前项目
@@ -493,15 +498,21 @@ def get_port_usage(port: int, exclude_project_name: Optional[str] = None) -> Opt
         return None
 
 
-def find_available_port(start_port: int = 8080, max_attempts: int = 100, exclude_project_name: Optional[str] = None) -> int:
+def find_available_port(
+    start_port: int = 8080,
+    max_attempts: int = 100,
+    exclude_project_name: Optional[str] = None,
+    include_configured_projects: bool = True
+) -> int:
     """查找可用端口，从 start_port 开始向上搜索
 
     Args:
         start_port: 起始端口
         max_attempts: 最大尝试次数
         exclude_project_name: 排除的项目名（用于创建项目时不检测自己）
+        include_configured_projects: 是否避开已配置但未运行的项目端口
     """
     for port in range(start_port, start_port + max_attempts):
-        if get_port_usage(port, exclude_project_name) is None:
+        if get_port_usage(port, exclude_project_name, include_configured_projects) is None:
             return port
     return start_port
