@@ -706,7 +706,7 @@ class CreateProjectDialog(FluentDialog):
     def create_project(self):
         """创建项目"""
         # 检查是否为导入项目
-        is_import = self.project_type_segment.currentItem() == "import"
+        is_import = self.project_type_segment.currentRouteKey() == "import"
         src_dir = self.src_dir_input.text().strip() if is_import else None
 
         # 导入项目时验证源目录
