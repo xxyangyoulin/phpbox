@@ -20,11 +20,31 @@ class Project:
     php_version: str = "未知"
     port: str = "未知"
     is_running: bool = False
+    php_running: bool = False
+    nginx_running: bool = False
     auto_restart: bool = True  # 是否开机自启
 
     @property
     def status_text(self) -> str:
-        return "运行中" if self.is_running else "已停止"
+        if self.php_running and self.nginx_running:
+            return "运行中"
+        if self.php_running or self.nginx_running:
+            return "部分运行"
+        return "已停止"
+
+    @property
+    def health_status(self) -> str:
+        if self.php_running and self.nginx_running:
+            return "healthy"
+        if self.php_running or self.nginx_running:
+            return "partial"
+        return "stopped"
+
+    @property
+    def health_summary(self) -> str:
+        php_text = "运行" if self.php_running else "停止"
+        nginx_text = "运行" if self.nginx_running else "停止"
+        return f"PHP {php_text} / Nginx {nginx_text}"
 
 
 class ProjectManager:
@@ -57,7 +77,9 @@ class ProjectManager:
         name = path.name
         php_version = self._get_php_version(path)
         port = self._get_port(path)
-        is_running = self._check_running(path)
+        php_running = self._check_service_running(path, "php")
+        nginx_running = self._check_service_running(path, "nginx")
+        is_running = php_running and nginx_running
         auto_restart = self._get_auto_restart(path)
 
         return Project(
@@ -66,6 +88,8 @@ class ProjectManager:
             php_version=php_version,
             port=port,
             is_running=is_running,
+            php_running=php_running,
+            nginx_running=nginx_running,
             auto_restart=auto_restart
         )
 
@@ -132,10 +156,10 @@ class ProjectManager:
             self._running_containers = set()
         self._running_containers_ts = now
 
-    def _check_running(self, path: Path) -> bool:
-        """检查项目是否在运行"""
+    def _check_service_running(self, path: Path, service: str) -> bool:
+        """检查项目某个服务是否在运行"""
         self._refresh_running_containers()
-        container_name = f"phpdev-{path.name}-php"
+        container_name = f"phpdev-{path.name}-{service}"
         return container_name in self._running_containers
 
     def project_exists(self, name: str) -> bool:

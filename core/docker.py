@@ -3,9 +3,87 @@ import re
 import time
 import subprocess
 import os
+import shutil
 from pathlib import Path
 from typing import List, Optional, Callable, Tuple
 from dataclasses import dataclass
+
+
+def summarize_docker_error(error: str) -> str:
+    """将原始 Docker 错误摘要为更易读的中文提示"""
+    raw = (error or "").strip()
+    if not raw:
+        return "Docker 操作失败"
+
+    lower = raw.lower()
+    if "address already in use" in lower or "port is already allocated" in lower:
+        match = re.search(r'(?<!\d)(\d{2,5})(?:->|:)', raw)
+        port_text = f"端口 {match.group(1)} " if match else ""
+        return f"{port_text}已被占用，请修改项目端口或停止冲突服务。"
+    if "permission denied" in lower and "docker.sock" in lower:
+        return "当前用户没有访问 Docker 的权限，请确认已加入 docker 用户组。"
+    if "cannot connect to the docker daemon" in lower or "is the docker daemon running" in lower:
+        return "无法连接到 Docker 服务，请确认 Docker 已启动。"
+    if "pull access denied" in lower or "repository does not exist" in lower:
+        return "镜像拉取失败，请检查镜像名称、网络或仓库访问权限。"
+    if "build failed" in lower or "failed to solve" in lower:
+        return "Docker 镜像构建失败，请检查 Dockerfile、网络和扩展下载日志。"
+    if "no such service" in lower:
+        return "Compose 配置中的服务不存在，请检查 docker-compose.yml。"
+    if "yaml" in lower or "compose file" in lower or "parsing" in lower:
+        return "Compose 配置解析失败，请检查 docker-compose.yml 格式。"
+    if "manifest" in lower and "not found" in lower:
+        return "镜像标签不存在，请检查 PHP 版本或基础镜像标签。"
+
+    first_line = raw.splitlines()[0].strip()
+    return first_line or "Docker 操作失败"
+
+
+def collect_environment_diagnostics() -> List[Tuple[str, str]]:
+    """收集 Linux 环境诊断信息"""
+    diagnostics: List[Tuple[str, str]] = []
+
+    def add_check(label: str, ok: bool, detail: str = ""):
+        prefix = "正常" if ok else "缺失/异常"
+        diagnostics.append((label, f"{prefix} · {detail}" if detail else prefix))
+
+    docker_bin = shutil.which("docker")
+    add_check("Docker 命令", bool(docker_bin), docker_bin or "未找到 docker")
+
+    compose_detail = "未检测到 docker compose 或 docker-compose"
+    compose_ok = False
+    for cmd in (["docker", "compose", "version"], ["docker-compose", "version"]):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                compose_ok = True
+                compose_detail = " ".join(cmd[:-1])
+                break
+        except Exception:
+            continue
+    add_check("Compose", compose_ok, compose_detail)
+
+    terminal = os.environ.get("TERMINAL") or "x-terminal-emulator"
+    available_terminal = next(
+        (t for t in [terminal, "kitty", "alacritty", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"] if shutil.which(t)),
+        None
+    )
+    add_check("终端模拟器", bool(available_terminal), available_terminal or "未找到常见终端")
+
+    opener = next((c for c in ["xdg-open", "gio", "kioclient5", "kde-open5"] if shutil.which(c)), None)
+    add_check("系统打开器", bool(opener), opener or "未找到 xdg-open/gio")
+
+    try:
+        log_dir = Path.home() / ".phpbox" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        test_file = log_dir / ".diagnose-write"
+        test_file.write_text("ok", encoding="utf-8")
+        test_file.unlink(missing_ok=True)
+        add_check("日志目录", True, str(log_dir))
+    except Exception:
+        add_check("日志目录", False, str(Path.home() / ".phpbox" / "logs"))
+
+    return diagnostics
 
 
 @dataclass
@@ -14,6 +92,7 @@ class DockerResult:
     success: bool
     output: str = ""
     error: str = ""
+    raw_error: str = ""
     port_conflict: bool = False  # 是否是端口冲突
     port_conflict_detail: str = ""  # 端口冲突详情
 
@@ -84,7 +163,8 @@ class DockerManager:
         if not self._compose_cmd:
             return DockerResult(
                 success=False,
-                error="未检测到 docker compose 或 docker-compose，请安装其中之一"
+                error="未检测到 docker compose 或 docker-compose，请安装其中之一",
+                raw_error="未检测到 docker compose 或 docker-compose，请安装其中之一"
             )
 
         try:
@@ -103,11 +183,17 @@ class DockerManager:
             if result.returncode == 0:
                 return DockerResult(success=True, output=result.stdout)
             else:
-                return DockerResult(success=False, error=result.stderr)
+                raw_error = result.stderr.strip() or result.stdout.strip()
+                return DockerResult(
+                    success=False,
+                    error=summarize_docker_error(raw_error),
+                    raw_error=raw_error
+                )
         except subprocess.TimeoutExpired:
-            return DockerResult(success=False, error="命令执行超时")
+            return DockerResult(success=False, error="命令执行超时", raw_error="命令执行超时")
         except Exception as e:
-            return DockerResult(success=False, error=str(e))
+            raw_error = str(e)
+            return DockerResult(success=False, error=summarize_docker_error(raw_error), raw_error=raw_error)
 
     def up(self, build: bool = False) -> DockerResult:
         """启动服务"""

@@ -11,6 +11,7 @@ from qfluentwidgets import (
 
 from core.settings import Settings
 from core.proxy import detect_system_proxy
+from ui.dialogs.environment_diagnostics import EnvironmentDiagnosticsDialog
 from ui.styles import FluentDialog, apply_theme
 
 
@@ -89,6 +90,20 @@ class SettingsDialog(FluentDialog):
 
 
         layout.addWidget(theme_card)
+
+        # 环境诊断卡片
+        diagnostics_card = CardWidget(self)
+        diagnostics_layout = QVBoxLayout(diagnostics_card)
+        diagnostics_layout.setSpacing(12)
+
+        diagnostics_layout.addWidget(StrongBodyLabel("环境诊断"))
+        diagnostics_layout.addWidget(CaptionLabel("检查 Docker、Compose、终端、系统打开器与代理设置。"))
+
+        diagnostics_btn = PushButton("查看诊断")
+        diagnostics_btn.clicked.connect(self.open_diagnostics)
+        diagnostics_layout.addWidget(diagnostics_btn)
+
+        layout.addWidget(diagnostics_card)
 
         layout.addStretch()
 
@@ -236,3 +251,7 @@ class SettingsDialog(FluentDialog):
             self.proxy_host_input.clear()
             self.proxy_port_input.clear()
             self.theme_combo.setCurrentIndex(0)
+
+    def open_diagnostics(self):
+        """打开环境诊断对话框"""
+        EnvironmentDiagnosticsDialog(self).exec()

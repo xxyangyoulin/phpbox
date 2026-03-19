@@ -237,7 +237,7 @@ class BuildWorker(QThread):
                 self.logs.append("")
 
             docker = DockerManager(self.project_path)
-            cmd = docker.get_compose_command() + ["build", "--no-cache"]
+            cmd = docker.get_compose_command() + ["build"]
             if not docker.get_compose_command():
                 self.finished.emit(False, "未检测到 docker compose 或 docker-compose", self.logs)
                 return
@@ -835,7 +835,36 @@ class CreateProjectDialog(FluentDialog):
                     shutil.copy2(item, project_path / "src" / item.name)
         else:
             # 新建项目：生成 index.php
-            (project_path / "src" / "index.php").write_text("<?php\nphpinfo();\n")
+            (project_path / "src" / "index.php").write_text(
+                """<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PHPBox 项目已就绪</title>
+    <style>
+        body { font-family: sans-serif; background: #f8fafc; color: #0f172a; margin: 0; }
+        .wrap { max-width: 760px; margin: 48px auto; padding: 32px; background: #ffffff; border-radius: 16px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08); }
+        h1 { margin-top: 0; }
+        code { background: #e2e8f0; padding: 2px 6px; border-radius: 6px; }
+        .muted { color: #64748b; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h1>PHPBox 项目已创建</h1>
+        <p>当前容器环境已经就绪，可以开始开发。</p>
+        <p class="muted">你可以把业务代码放到 <code>src/</code> 目录，然后刷新页面查看效果。</p>
+        <ul>
+            <li>Web 服务：Nginx</li>
+            <li>PHP 运行时：PHP-FPM</li>
+            <li>后续可在项目详情页安装扩展、调整 Xdebug 和 PHP 配置</li>
+        </ul>
+    </div>
+</body>
+</html>
+"""
+            )
 
         # 生成 nginx 配置
         nginx_conf = self.generate_nginx_config(framework)

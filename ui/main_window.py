@@ -81,10 +81,10 @@ def get_project_color(name: str) -> str:
     return PROJECT_COLORS[ord(letter) % len(PROJECT_COLORS)]
 
 
-def make_project_icon(name: str, is_running: bool = True) -> QIcon:
+def make_project_icon(name: str, is_running: bool = True, is_partial: bool = False) -> QIcon:
     """根据项目首字母生成彩色圆形图标"""
     letter = name[0].upper() if name else "?"
-    color = get_project_color(name) if is_running else "#8a8a8a"
+    color = "#f59e0b" if is_partial else (get_project_color(name) if is_running else "#8a8a8a")
 
     # 使用更高分辨率避免模糊
     size = 80
@@ -122,13 +122,15 @@ class ProjectNavigationItem(BaseNavigationPushButton):
         self.project_port = project.port
         self.project_php_version = project.php_version
         self.is_running = project.is_running
+        self.is_partial = project.health_status == "partial"
         self.project_color = get_project_color(project.name)
-        super().__init__(make_project_icon(project.name, self.is_running), project.name, True, parent)
+        super().__init__(make_project_icon(project.name, self.is_running, self.is_partial), project.name, True, parent)
 
-    def set_running_state(self, is_running: bool):
-        if self.is_running != is_running:
+    def set_running_state(self, is_running: bool, is_partial: bool = False):
+        if self.is_running != is_running or self.is_partial != is_partial:
             self.is_running = is_running
-            self._icon = make_project_icon(self.project_name, self.is_running)
+            self.is_partial = is_partial
+            self._icon = make_project_icon(self.project_name, self.is_running, self.is_partial)
             self.update()
 
     def paintEvent(self, e):
@@ -157,7 +159,7 @@ class ProjectNavigationItem(BaseNavigationPushButton):
         icon_rect = QRectF(icon_left, icon_top, icon_size, icon_size)
 
         letter = self.project_name[0].upper() if self.project_name else "?"
-        color = QColor(self.project_color if self.is_running else "#8a8a8a")
+        color = QColor("#f59e0b" if self.is_partial else (self.project_color if self.is_running else "#8a8a8a"))
 
         # 绘制圆形背景
         painter.setPen(Qt.PenStyle.NoPen)
@@ -621,13 +623,14 @@ class ModernDashboardWidget(ScrollArea):
         """
         self.name_label.setText(project.name)
         
-        # 正在加载时颜色不变，不运行时变为灰色
+        # 正在加载时颜色不变，部分运行显示警告色
         is_running = loading or project.is_running
-        display_color = get_project_color(project.name) if is_running else "#8a8a8a"
+        is_partial = not loading and project.health_status == "partial"
+        display_color = "#f59e0b" if is_partial else (get_project_color(project.name) if is_running else "#8a8a8a")
         self.name_label.setStyleSheet(f"color: {display_color};")
 
         # 更新头像
-        self.avatar_label.setPixmap(make_project_icon(project.name, is_running).pixmap(48, 48))
+        self.avatar_label.setPixmap(make_project_icon(project.name, is_running, is_partial).pixmap(48, 48))
 
         # 计算目录大小和日志大小
         project_path = Path(project.path)
@@ -636,7 +639,7 @@ class ModernDashboardWidget(ScrollArea):
         logs_size = get_dir_size(logs_path) if logs_path.exists() else 0
 
         self.stats_line.setText(
-            f"PHP {project.php_version}  ·  :{project.port}  ·  {format_size(total_size)}  ·  日志 {format_size(logs_size)}"
+            f"PHP {project.php_version}  ·  :{project.port}  ·  {format_size(total_size)}  ·  日志 {format_size(logs_size)}  ·  {project.health_summary}"
         )
         self.stats_line.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
         self.path_label.setText(str(project.path))
@@ -654,6 +657,14 @@ class ModernDashboardWidget(ScrollArea):
             )
             self.toggle_btn.setText("停止")
             self.toggle_btn.setIcon(FIF.PAUSE)
+            self.toggle_btn.setEnabled(True)
+        elif project.health_status == "partial":
+            self.status_badge.setText("异常")
+            self.status_badge.setStyleSheet(
+                "background-color: #f59e0b; color: white; border-radius: 14px; font-weight: bold;"
+            )
+            self.toggle_btn.setText("启动")
+            self.toggle_btn.setIcon(FIF.PLAY)
             self.toggle_btn.setEnabled(True)
         else:
             self.status_badge.setText("已停止")
@@ -1613,7 +1624,9 @@ class MainWindow(FluentWindow):
         if route_key in self._project_nav_items:
             nav_item = self._project_nav_items[route_key]
             if hasattr(nav_item, 'set_running_state'):
-                nav_item.set_running_state(is_running)
+                project = next((p for p in self.projects if p.name == project_name), None)
+                is_partial = bool(project and project.health_status == "partial")
+                nav_item.set_running_state(is_running, is_partial)
 
     def load_projects(self, select_project: str = None):
         """异步加载项目列表
@@ -1662,7 +1675,7 @@ class MainWindow(FluentWindow):
                 widget=nav_item,
                 onClick=lambda checked=False, proj=p: self.on_project_clicked(proj),
                 position=NavigationItemPosition.SCROLL,
-                tooltip=f"PHP {project.php_version} | 端口:{project.port}"
+                tooltip=f"PHP {project.php_version} | 端口:{project.port} | {project.health_summary}"
             )
             self._project_nav_keys.append(route_key)
             self._project_nav_items[route_key] = nav_item
@@ -1724,7 +1737,7 @@ class MainWindow(FluentWindow):
         if route_key in self._project_nav_items:
             nav_item = self._project_nav_items[route_key]
             if hasattr(nav_item, 'set_running_state'):
-                nav_item.set_running_state(updated.is_running)
+                nav_item.set_running_state(updated.is_running, updated.health_status == "partial")
 
         # 如果是当前显示的项目，更新仪表盘
         if self.dashboard_page.current_project and self.dashboard_page.current_project.name == project_name:

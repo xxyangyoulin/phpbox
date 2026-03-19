@@ -86,7 +86,7 @@ EXTENSIONS = {
     ],
     "性能/调试": [
         {"id": "opcache", "name": "OPcache 加速", "default": False},
-        {"id": "xdebug", "name": "Xdebug 调试", "default": True},
+        {"id": "xdebug", "name": "Xdebug 调试", "default": False},
         {"id": "pcov", "name": "代码覆盖率", "default": False},
     ],
     "协程/高性能": [
