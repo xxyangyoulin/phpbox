@@ -19,7 +19,6 @@ TryExec=phpbox
 Icon=phpbox
 StartupNotify=true
 Terminal=false
-StartupNotify=true
 StartupWMClass=phpbox
 Categories=Development;IDE;Qt;
 MimeType=application/x-php;
