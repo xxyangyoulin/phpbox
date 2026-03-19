@@ -1,5 +1,5 @@
 """设置对话框"""
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout
+from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QApplication
 from PyQt6.QtCore import Qt
 
 from qfluentwidgets import (
@@ -11,7 +11,7 @@ from qfluentwidgets import (
 
 from core.settings import Settings
 from core.proxy import detect_system_proxy
-from ui.styles import FluentDialog
+from ui.styles import FluentDialog, apply_theme
 
 
 class SettingsDialog(FluentDialog):
@@ -87,8 +87,6 @@ class SettingsDialog(FluentDialog):
         theme_row.addStretch()
         theme_layout.addLayout(theme_row)
 
-        theme_hint = CaptionLabel("提示: 更改主题后需要重启程序生效。")
-        theme_layout.addWidget(theme_hint)
 
         layout.addWidget(theme_card)
 
@@ -205,10 +203,18 @@ class SettingsDialog(FluentDialog):
             self.proxy_enabled_cb.isChecked()
         )
 
-        # 保存主题设置
+        # 保存并立即应用主题
         theme_index = self.theme_combo.currentIndex()
         themes = ["auto", "light", "dark"]
-        self.settings.set_theme(themes[theme_index])
+        theme = themes[theme_index]
+        self.settings.set_theme(theme)
+
+        app = QApplication.instance()
+        if theme == "auto":
+            from ui.styles import detect_system_theme
+            apply_theme(app, detect_system_theme())
+        else:
+            apply_theme(app, theme)
 
         InfoBar.success(
             title="成功",
