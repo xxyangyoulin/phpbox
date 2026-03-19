@@ -557,7 +557,7 @@ class CreateProjectDialog(FluentDialog):
         is_import = index == 1
 
         self._src_dir_widget.setVisible(is_import)
-        self._framework_card_widget.setVisible(not is_import)
+        # 框架选择始终显示（新建和导入都需要）
 
         if is_import and self.src_dir_input.text():
             src_path = Path(self.src_dir_input.text())
