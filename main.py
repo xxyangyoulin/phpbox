@@ -10,10 +10,27 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, qInstallMessageHandler, QtMsgType
 from ui.main_window import MainWindow
 from ui.styles import apply_theme, ThemeWatcher
 from core.logger import logger
+
+
+_SUPPRESSED_QT_WARNINGS = (
+    "QPainter::",
+    "QWidgetEffectSourcePrivate::",
+)
+
+
+def _qt_message_handler(msg_type, context, message):
+    if msg_type == QtMsgType.QtWarningMsg and any(
+        message.startswith(p) for p in _SUPPRESSED_QT_WARNINGS
+    ):
+        return
+    if msg_type == QtMsgType.QtCriticalMsg:
+        print(f"Qt Critical: {message}", file=sys.stderr)
+    elif msg_type == QtMsgType.QtFatalMsg:
+        print(f"Qt Fatal: {message}", file=sys.stderr)
 
 
 def main():
@@ -23,6 +40,8 @@ def main():
     parser.add_argument("--hide", action="store_true", help="启动时隐藏主窗口，只显示托盘图标")
     parser.add_argument("--new-project", action="store_true", help="打开新建项目对话框")
     args = parser.parse_args()
+
+    qInstallMessageHandler(_qt_message_handler)
 
     # 高 DPI 支持
     QApplication.setHighDpiScaleFactorRoundingPolicy(
