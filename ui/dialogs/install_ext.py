@@ -16,6 +16,7 @@ from qfluentwidgets import (
 
 from core.docker import DockerManager
 from core.settings import Settings
+from core.proxy import convert_proxy_for_docker
 from ui.styles import FluentDialog, themed_color
 
 
@@ -41,8 +42,18 @@ class InstallExtWorker(QThread):
             if not compose_cmd:
                 self.finished.emit(False, "未检测到 docker compose 或 docker-compose", self.logs)
                 return
+            # 显式将代理环境变量注入容器内的安装进程
+            exec_args = ["exec"]
+            if self.proxy:
+                exec_args.extend([
+                    "-e", f"http_proxy={self.proxy}",
+                    "-e", f"https_proxy={self.proxy}",
+                    "-e", f"HTTP_PROXY={self.proxy}",
+                    "-e", f"HTTPS_PROXY={self.proxy}",
+                ])
+
             # 安装扩展
-            cmd = compose_cmd + ["exec", "-u", "root", "php", "install-php-extensions"] + self.extensions
+            cmd = compose_cmd + exec_args + ["-u", "root", "php", "install-php-extensions"] + self.extensions
 
             # 设置环境变量（包含代理）
             env = os.environ.copy()
@@ -289,6 +300,8 @@ class InstallExtDialog(FluentDialog):
         proxy = None
         if self.use_proxy_cb.isChecked():
             proxy = self.settings.get_proxy()
+            if proxy:
+                proxy = convert_proxy_for_docker(proxy)
 
         # 清空日志
         self.log_text.clear()
