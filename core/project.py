@@ -1,4 +1,5 @@
 """项目管理核心逻辑"""
+import errno
 import os
 import re
 import time
@@ -10,6 +11,25 @@ from dataclasses import dataclass
 from typing import Optional, List, Tuple, Set
 from .config import BASE_DIR, ensure_base_dir
 from .docker import DockerManager
+
+LEGACY_CODE_DIR_NAME = "src"
+
+
+def get_project_code_dir_name(project_name: str) -> str:
+    """返回新项目默认使用的代码目录名"""
+    return project_name
+
+
+def get_project_code_path(project_path: Path, project_name: str) -> Path:
+    """获取项目代码目录，兼容历史 src 结构"""
+    new_code_path = project_path / get_project_code_dir_name(project_name)
+    legacy_code_path = project_path / LEGACY_CODE_DIR_NAME
+
+    if new_code_path.exists():
+        return new_code_path
+    if legacy_code_path.exists():
+        return legacy_code_path
+    return new_code_path
 
 
 @dataclass
@@ -491,7 +511,10 @@ def get_port_usage(
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind(("0.0.0.0", port))
-            except OSError:
+            except OSError as e:
+                # 低端口（<1024）在非 root 下 bind 会因权限失败，不能误判为端口占用
+                if e.errno in (errno.EACCES, errno.EPERM):
+                    return None
                 return "系统监听进程（当前权限不足，无法识别名称）"
         return None
     except Exception:

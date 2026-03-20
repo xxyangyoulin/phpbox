@@ -28,7 +28,7 @@ from qfluentwidgets import (
     SystemTrayMenu, Action, RoundMenu, IconWidget
 )
 
-from core.project import ProjectManager, Project, get_port_usage
+from core.project import ProjectManager, Project, get_port_usage, get_project_code_path
 from core.docker import DockerManager
 from core.config import EXTENSIONS
 from ui.dialogs.change_port_dialog import ChangePortDialog
@@ -1601,11 +1601,12 @@ class ProjectDashboardPage(QWidget):
             )
 
     def open_code_log_terminal(self):
-        """打开代码日志终端（tail -f src/runtime/*.log）"""
+        """打开代码日志终端（tail -f 代码目录/runtime/*.log）"""
         if not self.current_project:
             return
 
-        runtime_path = Path(self.current_project.path) / "src" / "runtime"
+        code_path = get_project_code_path(self.current_project.path, self.current_project.name)
+        runtime_path = code_path / "runtime"
         if not runtime_path.exists():
             InfoBar.warning(
                 title="提示",
@@ -1755,7 +1756,7 @@ class ProjectDashboardPage(QWidget):
             return
 
         # 检查 composer.json 是否存在
-        composer_json = self.current_project.path / "src" / "composer.json"
+        composer_json = get_project_code_path(self.current_project.path, self.current_project.name) / "composer.json"
         if not composer_json.exists():
             InfoBar.warning(
                 title="提示",

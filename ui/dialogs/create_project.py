@@ -20,7 +20,10 @@ from qfluentwidgets import (
 
 from core.config import BASE_DIR, PHP_VERSIONS, DEFAULT_PORT, ensure_base_dir
 from core.config import EXT_VERSION_PHP72, EXT_VERSION_PHP74, EXT_VERSION_PHP83
-from core.project import ProjectManager, get_port_usage, find_available_port
+from core.project import (
+    ProjectManager, get_port_usage, find_available_port,
+    get_project_code_dir_name,
+)
 from core.proxy import detect_system_proxy, convert_proxy_for_docker
 from core.docker import DockerManager
 from core.settings import Settings
@@ -813,8 +816,11 @@ class CreateProjectDialog(FluentDialog):
                              php_version: str, port: int, extensions: List[str], proxy: str,
                              src_path: Path = None, framework: str = "通用"):
         """创建项目文件"""
+        code_dir_name = get_project_code_dir_name(project_name)
+        code_dir = project_path / code_dir_name
+
         # 创建目录结构
-        for subdir in ['src', 'nginx', 'php', 'logs/nginx', 'logs/php-fpm']:
+        for subdir in [code_dir_name, 'nginx', 'php', 'logs/nginx', 'logs/php-fpm']:
             (project_path / subdir).mkdir(parents=True, exist_ok=True)
 
         # 生成 Dockerfile
@@ -822,20 +828,20 @@ class CreateProjectDialog(FluentDialog):
         (project_path / "Dockerfile").write_text(dockerfile)
 
         # 生成 docker-compose.yml
-        compose = self.generate_compose(project_name, port, proxy)
+        compose = self.generate_compose(project_name, port, proxy, code_dir_name)
         (project_path / "docker-compose.yml").write_text(compose)
 
-        # 生成 src 目录内容
+        # 生成代码目录内容
         if src_path:
             # 导入项目：复制源代码
             for item in src_path.iterdir():
                 if item.is_dir():
-                    shutil.copytree(item, project_path / "src" / item.name, dirs_exist_ok=True)
+                    shutil.copytree(item, code_dir / item.name, dirs_exist_ok=True)
                 else:
-                    shutil.copy2(item, project_path / "src" / item.name)
+                    shutil.copy2(item, code_dir / item.name)
         else:
             # 新建项目：生成 index.php
-            (project_path / "src" / "index.php").write_text(
+            (code_dir / "index.php").write_text(
                 """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -854,7 +860,7 @@ class CreateProjectDialog(FluentDialog):
     <div class="wrap">
         <h1>PHPBox 项目已创建</h1>
         <p>当前容器环境已经就绪，可以开始开发。</p>
-        <p class="muted">你可以把业务代码放到 <code>src/</code> 目录，然后刷新页面查看效果。</p>
+        <p class="muted">你可以把业务代码放到 <code>项目同名目录/</code> 中，然后刷新页面查看效果。</p>
         <ul>
             <li>Web 服务：Nginx</li>
             <li>PHP 运行时：PHP-FPM</li>
@@ -1013,7 +1019,7 @@ class CreateProjectDialog(FluentDialog):
             lines.append(f"RUN install-php-extensions {' '.join(normal_exts)}")
         return lines
 
-    def generate_compose(self, project_name: str, port: int, proxy: str) -> str:
+    def generate_compose(self, project_name: str, port: int, proxy: str, code_dir_name: str) -> str:
         """生成 docker-compose.yml 内容"""
         uid = os.getuid()
         gid = os.getgid()
@@ -1047,7 +1053,7 @@ services:
     environment:
       - PROJECT_NAME={project_name}
     volumes:
-      - ./src:/var/www/html
+      - ./{code_dir_name}:/var/www/html
       - ./php/php.ini:/usr/local/etc/php/php.ini
       - ./php/php-fpm.conf:/usr/local/etc/php-fpm.conf
       - ./php/www.conf:/usr/local/etc/php-fpm.d/www.conf
@@ -1067,7 +1073,7 @@ services:
     ports:
       - "{port}:80"
     volumes:
-      - ./src:/var/www/html
+      - ./{code_dir_name}:/var/www/html
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./logs/nginx:/var/log/nginx
