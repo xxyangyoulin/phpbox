@@ -1,5 +1,6 @@
 """主窗口"""
 import os
+import re
 import shlex
 import subprocess
 import shutil
@@ -29,6 +30,7 @@ from qfluentwidgets import (
 
 from core.project import ProjectManager, Project, get_port_usage
 from core.docker import DockerManager
+from core.config import EXTENSIONS
 from ui.dialogs.change_port_dialog import ChangePortDialog
 from ui.dialogs.create_project import CreateProjectDialog
 from ui.dialogs.log_viewer import LogViewerDialog
@@ -73,6 +75,24 @@ def format_size(size_bytes: int) -> str:
 # 项目图标颜色表
 PROJECT_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b",
                   "#8b5cf6", "#ec4899", "#14b8a6", "#f97316"]
+
+AVAILABLE_EXTENSION_IDS: list[str] = []
+AVAILABLE_EXTENSION_META: dict[str, dict] = {}
+for _category_extensions in EXTENSIONS.values():
+    for _extension in _category_extensions:
+        _ext_id = _extension["id"]
+        if _ext_id not in AVAILABLE_EXTENSION_META:
+            AVAILABLE_EXTENSION_IDS.append(_ext_id)
+            AVAILABLE_EXTENSION_META[_ext_id] = _extension
+
+
+def normalize_extension_name(extension: str) -> str:
+    """统一扩展名格式，便于和内置清单比较"""
+    normalized = re.sub(r"[\s-]+", "_", extension.strip().lower())
+    alias_map = {
+        "zend_opcache": "opcache",
+    }
+    return alias_map.get(normalized, normalized)
 
 
 def get_project_color(name: str) -> str:
@@ -307,6 +327,7 @@ class ModernDashboardWidget(ScrollArea):
 
     # PHP 配置点击信号
     config_clicked = pyqtSignal(str)
+    extension_install_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -665,28 +686,47 @@ class ModernDashboardWidget(ScrollArea):
         # 已安装扩展
         ext_header = QHBoxLayout()
         ext_header.addWidget(BodyLabel("已安装扩展"))
-        self.ext_count_label = CaptionLabel("0 个")
-        self.ext_count_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
+        self.installed_ext_count_label = CaptionLabel("0 个")
+        self.installed_ext_count_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
         ext_header.addStretch()
-        ext_header.addWidget(self.ext_count_label)
+        ext_header.addWidget(self.installed_ext_count_label)
         config_layout.addLayout(ext_header)
 
-        # 扩展标签容器
-        self.ext_container = QWidget()
-        self.ext_layout = FlowLayout(self.ext_container, isTight=True)
-        self.ext_layout.setSpacing(6)
-        self.ext_layout.setContentsMargins(0, 0, 0, 0)
-        config_layout.addWidget(self.ext_container)
-        self.ext_toggle_btn = PushButton("展开全部扩展")
-        self.ext_toggle_btn.clicked.connect(self._toggle_extensions)
-        self.ext_toggle_btn.setVisible(False)
-        config_layout.addWidget(self.ext_toggle_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        self.installed_ext_container = QWidget()
+        self.installed_ext_layout = FlowLayout(self.installed_ext_container, isTight=True)
+        self.installed_ext_layout.setSpacing(6)
+        self.installed_ext_layout.setContentsMargins(0, 0, 0, 0)
+        config_layout.addWidget(self.installed_ext_container)
+        self.installed_ext_toggle_btn = PushButton("展开全部扩展")
+        self.installed_ext_toggle_btn.clicked.connect(self._toggle_installed_extensions)
+        self.installed_ext_toggle_btn.setVisible(False)
+        config_layout.addWidget(self.installed_ext_toggle_btn, 0, Qt.AlignmentFlag.AlignLeft)
+
+        missing_header = QHBoxLayout()
+        missing_header.addWidget(BodyLabel("未安装扩展"))
+        self.missing_ext_count_label = CaptionLabel("0 个")
+        self.missing_ext_count_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
+        missing_header.addStretch()
+        missing_header.addWidget(self.missing_ext_count_label)
+        config_layout.addLayout(missing_header)
+
+        self.missing_ext_container = QWidget()
+        self.missing_ext_layout = FlowLayout(self.missing_ext_container, isTight=True)
+        self.missing_ext_layout.setSpacing(6)
+        self.missing_ext_layout.setContentsMargins(0, 0, 0, 0)
+        config_layout.addWidget(self.missing_ext_container)
+        self.missing_ext_toggle_btn = PushButton("展开全部未安装扩展")
+        self.missing_ext_toggle_btn.clicked.connect(self._toggle_missing_extensions)
+        self.missing_ext_toggle_btn.setVisible(False)
+        config_layout.addWidget(self.missing_ext_toggle_btn, 0, Qt.AlignmentFlag.AlignLeft)
 
         layout.addWidget(self.config_card)
 
         layout.addStretch(1)
-        self._extensions_expanded = False
-        self._all_extensions = []
+        self._installed_extensions_expanded = False
+        self._missing_extensions_expanded = False
+        self._installed_extensions = []
+        self._missing_extensions = []
         self._set_advanced_config_visible(False)
         self._refresh_header_actions(False, False)
 
@@ -720,43 +760,63 @@ class ModernDashboardWidget(ScrollArea):
         visible = not self._advanced_config_widgets[0].isVisible() if self._advanced_config_widgets else False
         self._set_advanced_config_visible(visible)
 
-    def _toggle_extensions(self):
-        self._extensions_expanded = not self._extensions_expanded
+    def _clear_flow_layout(self, layout: FlowLayout):
+        layout.takeAllWidgets()
+        while layout.count():
+            item = layout.takeAt(0)
+            if hasattr(item, 'widget') and callable(item.widget):
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
+            elif hasattr(item, 'deleteLater'):
+                item.deleteLater()
+
+    def _create_extension_label(self, ext: str) -> CaptionLabel:
+        label = CaptionLabel(ext)
+        label.setFixedHeight(22)
+        label.setStyleSheet(
+            f"background-color: {themed_color('#f1f5f9', 'rgba(148,163,184,0.12)')}; "
+            f"color: {themed_color('#475569', '#94a3b8')}; "
+            "border-radius: 4px; padding: 2px 8px;"
+        )
+        return label
+
+    def _create_missing_extension_button(self, ext_id: str) -> PillPushButton:
+        button = PillPushButton(ext_id)
+        button.setFixedHeight(26)
+        ext_name = AVAILABLE_EXTENSION_META.get(ext_id, {}).get("name", ext_id)
+        button.setToolTip(ext_name)
+        button.clicked.connect(lambda checked=False, ext=ext_id: self.extension_install_requested.emit(ext))
+        return button
+
+    def _toggle_installed_extensions(self):
+        self._installed_extensions_expanded = not self._installed_extensions_expanded
+        self._render_extensions()
+
+    def _toggle_missing_extensions(self):
+        self._missing_extensions_expanded = not self._missing_extensions_expanded
         self._render_extensions()
 
     def _render_extensions(self):
-        self.ext_layout.takeAllWidgets()
-        visible_exts = self._all_extensions if self._extensions_expanded else self._all_extensions[:10]
-
-        important_exts = {
-            "pdo", "pdo_mysql", "mysqli", "mysqlnd", "redis", "memcached",
-            "gd", "imagick", "zip", "curl", "mbstring", "json", "xml",
-            "opcache", "xdebug", "intl", "bcmath", "exif", "fileinfo",
-            "openssl", "tokenizer", "ctype", "session", "filter", "hash"
-        }
-
-        for ext in visible_exts:
+        self._clear_flow_layout(self.installed_ext_layout)
+        visible_installed = self._installed_extensions if self._installed_extensions_expanded else self._installed_extensions[:10]
+        for ext in visible_installed:
             if not ext or ext.startswith("["):
                 continue
-            label = CaptionLabel(ext)
-            label.setFixedHeight(22)
-            if ext.lower() in important_exts or ext.lower().replace("_", "") in important_exts:
-                label.setStyleSheet(
-                    f"background-color: {themed_color('#dbeafe', 'rgba(59,130,246,0.15)')}; "
-                    f"color: {themed_color('#1d4ed8', '#60a5fa')}; "
-                    "border-radius: 4px; padding: 2px 8px; font-weight: bold;"
-                )
-            else:
-                label.setStyleSheet(
-                    f"background-color: {themed_color('#f1f5f9', 'rgba(148,163,184,0.12)')}; "
-                    f"color: {themed_color('#475569', '#94a3b8')}; "
-                    "border-radius: 4px; padding: 2px 8px;"
-                )
-            self.ext_layout.addWidget(label)
+            self.installed_ext_layout.addWidget(self._create_extension_label(ext))
 
-        self.ext_toggle_btn.setVisible(len(self._all_extensions) > 10)
-        self.ext_toggle_btn.setText("收起扩展列表" if self._extensions_expanded else "展开全部扩展")
-        QTimer.singleShot(0, lambda: self.ext_layout._doLayout(self.ext_container.rect(), True))
+        self.installed_ext_toggle_btn.setVisible(len(self._installed_extensions) > 10)
+        self.installed_ext_toggle_btn.setText("收起已安装扩展" if self._installed_extensions_expanded else "展开全部已安装扩展")
+        QTimer.singleShot(0, lambda: self.installed_ext_layout._doLayout(self.installed_ext_container.rect(), True))
+
+        self._clear_flow_layout(self.missing_ext_layout)
+        visible_missing = self._missing_extensions if self._missing_extensions_expanded else self._missing_extensions[:10]
+        for ext_id in visible_missing:
+            self.missing_ext_layout.addWidget(self._create_missing_extension_button(ext_id))
+
+        self.missing_ext_toggle_btn.setVisible(len(self._missing_extensions) > 10)
+        self.missing_ext_toggle_btn.setText("收起未安装扩展" if self._missing_extensions_expanded else "展开全部未安装扩展")
+        QTimer.singleShot(0, lambda: self.missing_ext_layout._doLayout(self.missing_ext_container.rect(), True))
 
     def _refresh_header_actions(self, is_running: bool, is_partial: bool):
         while self.header_action_layout.count():
@@ -916,19 +976,16 @@ class ModernDashboardWidget(ScrollArea):
             # 可编辑项恢复样式
             if key in EDITABLE_CONFIGS:
                 label.setStyleSheet("font-weight: bold;")
-        self.ext_count_label.setText("0 个")
-        self._all_extensions = []
-        self._extensions_expanded = False
-        self.ext_toggle_btn.setVisible(False)
-        # 清空扩展标签
-        while self.ext_layout.count():
-            item = self.ext_layout.takeAt(0)
-            if hasattr(item, 'widget') and callable(item.widget):
-                widget = item.widget()
-                if widget:
-                    widget.deleteLater()
-            elif hasattr(item, 'deleteLater'):
-                item.deleteLater()
+        self.installed_ext_count_label.setText("0 个")
+        self.missing_ext_count_label.setText("0 个")
+        self._installed_extensions = []
+        self._missing_extensions = []
+        self._installed_extensions_expanded = False
+        self._missing_extensions_expanded = False
+        self.installed_ext_toggle_btn.setVisible(False)
+        self.missing_ext_toggle_btn.setVisible(False)
+        self._clear_flow_layout(self.installed_ext_layout)
+        self._clear_flow_layout(self.missing_ext_layout)
 
     def update_php_info(self, info: dict):
         """更新 PHP 配置信息显示"""
@@ -964,8 +1021,14 @@ class ModernDashboardWidget(ScrollArea):
         # 清空旧扩展标签
         # 添加扩展标签
         extensions = [e for e in sorted(info.get("extensions", [])) if e and not e.startswith("[")]
-        self._all_extensions = extensions
-        self.ext_count_label.setText(f"{len(extensions)} 个")
+        installed_normalized = {normalize_extension_name(ext) for ext in extensions}
+        self._installed_extensions = extensions
+        self._missing_extensions = [
+            ext_id for ext_id in AVAILABLE_EXTENSION_IDS
+            if ext_id not in installed_normalized
+        ]
+        self.installed_ext_count_label.setText(f"{len(extensions)} 个")
+        self.missing_ext_count_label.setText(f"{len(self._missing_extensions)} 个")
         self._render_extensions()
 
 
@@ -1057,6 +1120,7 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.xdebug_btn.clicked.connect(self.configure_xdebug)
         self.dashboard.config_refresh_btn.clicked.connect(self._refresh_php_info)
         self.dashboard.config_clicked.connect(self._on_php_config_clicked)
+        self.dashboard.extension_install_requested.connect(self._install_missing_extension)
         self.dashboard.composer_install_btn.clicked.connect(self.composer_install)
         self.dashboard.composer_update_btn.clicked.connect(self.composer_update)
         self.dashboard.composer_require_btn.clicked.connect(self.composer_require)
@@ -1593,6 +1657,29 @@ class ProjectDashboardPage(QWidget):
             self
         ).exec()
 
+    def _install_missing_extension(self, extension: str):
+        if not self.current_project:
+            return
+
+        ext_name = AVAILABLE_EXTENSION_META.get(extension, {}).get("name", extension)
+        box = MessageBox(
+            "安装扩展",
+            f"确认安装扩展 {extension} 吗？\n\n说明: {ext_name}",
+            self
+        )
+        box.yesButton.setText("确认安装")
+        box.cancelButton.setText("取消")
+
+        if not box.exec():
+            return
+
+        InstallExtDialog(
+            self.current_project.path,
+            self.current_project.name,
+            self,
+            initial_extensions=[extension]
+        ).exec()
+
     def _refresh_php_info(self):
         """异步刷新 PHP 配置信息"""
         if not self.current_project or not self.current_project.is_running:
@@ -1602,7 +1689,8 @@ class ProjectDashboardPage(QWidget):
         # 显示加载状态
         for key, label in self.dashboard.config_labels.items():
             label.setText("加载中...")
-        self.dashboard.ext_count_label.setText("加载中...")
+        self.dashboard.installed_ext_count_label.setText("加载中...")
+        self.dashboard.missing_ext_count_label.setText("加载中...")
 
         # 异步获取 PHP 信息
         project_path = str(self.current_project.path)

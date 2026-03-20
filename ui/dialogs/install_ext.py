@@ -126,13 +126,14 @@ class InstallExtWorker(QThread):
 class InstallExtDialog(FluentDialog):
     """安装扩展对话框"""
 
-    def __init__(self, project_path: Path, project_name: str, parent=None):
+    def __init__(self, project_path: Path, project_name: str, parent=None, initial_extensions: List[str] | None = None):
         super().__init__(parent)
         self.project_path = project_path
         self.project_name = project_name
         self.docker = DockerManager(project_path)
         self.settings = Settings()
         self.worker = None
+        self.initial_extensions = initial_extensions or []
 
         self.setWindowTitle(f"安装扩展 - {project_name}")
         self.setMinimumSize(600, 500)
@@ -153,6 +154,8 @@ class InstallExtDialog(FluentDialog):
         self.ext_input = LineEdit()
         self.ext_input.setPlaceholderText("例如: redis gd mongodb")
         self.ext_input.setClearButtonEnabled(True)
+        if self.initial_extensions:
+            self.ext_input.setText(" ".join(self.initial_extensions))
         layout.addWidget(self.ext_input)
 
         # 常用扩展快捷按钮
