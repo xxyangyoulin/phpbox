@@ -1,7 +1,7 @@
 """创建项目对话框"""
 import os
 import shutil
-from typing import List, Optional
+from typing import Dict, List, Optional
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QApplication, QStackedWidget,
     QWidget, QFileDialog, QFrame, QSizePolicy
@@ -24,7 +24,7 @@ from core.project import (
     ProjectManager, get_port_usage, find_available_port,
     get_project_code_dir_name,
 )
-from core.proxy import detect_system_proxy, convert_proxy_for_docker
+from core.proxy import detect_system_proxy, convert_proxy_for_docker, build_dockerfile_proxy_snippet
 from core.docker import DockerManager
 from core.settings import Settings
 from ui.widgets.extension_selector import ExtensionSelector
@@ -145,7 +145,7 @@ class FrameworkCard(QWidget):
         self._selected = False
         self._hovered = False
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(140, 100)
+        self.setFixedSize(148, 118)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._setup_ui()
 
@@ -153,8 +153,8 @@ class FrameworkCard(QWidget):
         from qfluentwidgets import IconWidget
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(6)
-        layout.setContentsMargins(8, 12, 8, 10)
+        layout.setSpacing(8)
+        layout.setContentsMargins(8, 12, 8, 12)
 
         icon_w = IconWidget(_FRAMEWORK_ICONS.get(self.framework, FIF.CODE), self)
         icon_w.setFixedSize(28, 28)
@@ -165,10 +165,11 @@ class FrameworkCard(QWidget):
         desc_lbl = CaptionLabel(_FRAMEWORK_DESCS.get(self.framework, ""), self)
         desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         desc_lbl.setWordWrap(True)
+        desc_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         layout.addWidget(icon_w, 0, Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(name_lbl, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(desc_lbl, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(desc_lbl, 1, Qt.AlignmentFlag.AlignCenter)
 
     def set_selected(self, selected: bool):
         self._selected = selected
@@ -442,7 +443,7 @@ class CreateProjectDialog(FluentDialog):
 
         fw_row = QHBoxLayout()
         fw_row.setSpacing(12)
-        self._framework_cards: dict[str, FrameworkCard] = {}
+        self._framework_cards: Dict[str, FrameworkCard] = {}
         for fw in ["通用", "Laravel", "ThinkPHP"]:
             fc = FrameworkCard(fw, self)
             fc.clicked.connect(self._select_framework)
@@ -959,7 +960,9 @@ class CreateProjectDialog(FluentDialog):
                     shutil.copy2(item, code_dir / item.name)
         else:
             # 新建项目：生成 index.php
-            (code_dir / "index.php").write_text(
+            index_dir = code_dir / "public" if framework in {"Laravel", "ThinkPHP"} else code_dir
+            index_dir.mkdir(parents=True, exist_ok=True)
+            (index_dir / "index.php").write_text(
                 """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1074,8 +1077,8 @@ class CreateProjectDialog(FluentDialog):
             ])
 
         lines.extend([
-            "# 安装基础工具 (包含 git, openssh-client, zsh)",
-            "RUN apt-get update && apt-get install -y unzip git openssh-client zsh curl wget sudo && rm -rf /var/lib/apt/lists/*",
+            "# 安装基础工具 (包含 git, openssh-client, zsh, cron)",
+            "RUN apt-get update && apt-get install -y unzip git openssh-client zsh curl wget sudo cron && rm -rf /var/lib/apt/lists/*",
             "",
             "# 创建用户 (与宿主机 UID/GID 一致)",
             "RUN groupadd -g ${USER_GID} user && \\",
@@ -1111,6 +1114,9 @@ class CreateProjectDialog(FluentDialog):
             f'export PROJECT_NAME="{project_name}"\\n'
             f'PROMPT="%{{\\033[38;5;39m%}}$PROJECT_NAME %{{\\033[38;5;208m%}}➜%{{\\033[0m%}}  %{{\\033[38;5;81m%}}%c%{{\\033[0m%}} "\' >> ~/.zshrc',
             "",
+            "# 代理快捷命令",
+            build_dockerfile_proxy_snippet(proxy),
+            "",
             "# 禁用 Oh My Zsh 自动更新",
             'RUN sed -i "s/# DISABLE_AUTO_UPDATE/DISABLE_AUTO_UPDATE/" ~/.zshrc && \\',
             '    echo "DISABLE_AUTO_UPDATE=true" >> ~/.zshrc',
@@ -1133,6 +1139,8 @@ class CreateProjectDialog(FluentDialog):
                 "# 清除代理，避免运行时影响业务",
                 "ENV http_proxy=''",
                 "ENV https_proxy=''",
+                "ENV HTTP_PROXY=''",
+                "ENV HTTPS_PROXY=''",
             ])
 
         return "\n".join(lines) + "\n"

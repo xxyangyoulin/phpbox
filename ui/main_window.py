@@ -10,7 +10,7 @@ import time as _time
 import webbrowser
 import functools
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -42,6 +42,8 @@ from ui.dialogs.config_editor import ConfigEditorDialog
 from ui.dialogs.xdebug_dialog import XdebugDialog
 from ui.dialogs.php_config_dialog import PhpConfigDialog, EDITABLE_CONFIGS
 from ui.dialogs.rename_project_dialog import RenameProjectDialog
+from ui.dialogs.rebuild_image import RebuildImageDialog
+from ui.dialogs.task_center import TaskCenterPage
 from ui.styles import themed_color
 
 
@@ -120,7 +122,7 @@ def get_project_scripts_file(project_path: Path) -> Path:
     return project_path / SCRIPTS_DIR_NAME / SCRIPTS_FILE_NAME
 
 
-def load_project_scripts(project_path: Path) -> list[dict]:
+def load_project_scripts(project_path: Path) -> List[dict]:
     scripts_file = get_project_scripts_file(project_path)
     if not scripts_file.exists():
         save_project_scripts(project_path, DEFAULT_PROJECT_SCRIPTS)
@@ -156,7 +158,7 @@ def load_project_scripts(project_path: Path) -> list[dict]:
     return normalized
 
 
-def save_project_scripts(project_path: Path, scripts: list[dict]):
+def save_project_scripts(project_path: Path, scripts: List[dict]):
     scripts_dir = project_path / SCRIPTS_DIR_NAME
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_file = get_project_scripts_file(project_path)
@@ -167,8 +169,8 @@ def save_project_scripts(project_path: Path, scripts: list[dict]):
 PROJECT_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b",
                   "#8b5cf6", "#ec4899", "#14b8a6", "#f97316"]
 
-AVAILABLE_EXTENSION_IDS: list[str] = []
-AVAILABLE_EXTENSION_META: dict[str, dict] = {}
+AVAILABLE_EXTENSION_IDS: List[str] = []
+AVAILABLE_EXTENSION_META: Dict[str, dict] = {}
 for _category_extensions in EXTENSIONS.values():
     for _extension in _category_extensions:
         _ext_id = _extension["id"]
@@ -655,6 +657,7 @@ class ModernDashboardWidget(ScrollArea):
         self.composer_update_btn = ToolCard(FIF.SYNC, "更新依赖")
         self.composer_require_btn = ToolCard(FIF.ADD, "添加依赖")
         self.install_ext_btn = ToolCard(FIF.APPLICATION, "安装扩展")
+        self.rebuild_image_btn = ToolCard(FIF.SYNC, "重建镜像")
         
         self.xdebug_btn = ToolCard(FIF.DEVELOPER_TOOLS, "Xdebug")
         self.code_log_btn = ToolCard(FIF.DOCUMENT, "Runtime 日志")
@@ -688,7 +691,7 @@ class ModernDashboardWidget(ScrollArea):
 
         common_group = create_tool_group(
             "常用操作",
-            [self.terminal_btn, self.docker_btn, self.config_btn, self.install_ext_btn, self.composer_install_btn]
+            [self.terminal_btn, self.docker_btn, self.config_btn, self.install_ext_btn, self.composer_install_btn, self.rebuild_image_btn]
         )
         advanced_group = create_tool_group(
             "高级操作",
@@ -947,7 +950,7 @@ class ModernDashboardWidget(ScrollArea):
         self.missing_ext_toggle_btn.setText("收起未安装扩展" if self._missing_extensions_expanded else "展开全部未安装扩展")
         QTimer.singleShot(0, lambda: self.missing_ext_layout._doLayout(self.missing_ext_container.rect(), True))
 
-    def set_project_scripts(self, scripts: list[dict]):
+    def set_project_scripts(self, scripts: List[dict]):
         self._clear_box_layout(self.scripts_list_layout)
 
         if not scripts:
@@ -1304,6 +1307,7 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.composer_install_btn.clicked.connect(self.composer_install)
         self.dashboard.composer_update_btn.clicked.connect(self.composer_update)
         self.dashboard.composer_require_btn.clicked.connect(self.composer_require)
+        self.dashboard.rebuild_image_btn.clicked.connect(self.rebuild_image)
         self.dashboard.clear_logs_btn.clicked.connect(self.clear_logs)
         self.dashboard.code_log_btn.clicked.connect(self.open_code_log_terminal)
         self.dashboard.rename_action.triggered.connect(self.rename_project)
@@ -1996,12 +2000,12 @@ class ProjectDashboardPage(QWidget):
             if package:
                 self._run_composer_command("require", package)
 
-    def _get_current_project_scripts(self) -> list[dict]:
+    def _get_current_project_scripts(self) -> List[dict]:
         if not self.current_project:
             return []
         return load_project_scripts(Path(self.current_project.path))
 
-    def _save_current_project_scripts(self, scripts: list[dict]):
+    def _save_current_project_scripts(self, scripts: List[dict]):
         if not self.current_project:
             return
         save_project_scripts(Path(self.current_project.path), scripts)
@@ -2196,6 +2200,21 @@ class ProjectDashboardPage(QWidget):
 
         self._run_script_in_terminal(script["name"], command)
 
+    def rebuild_image(self):
+        """重建当前项目镜像"""
+        if not self.current_project:
+            return
+        if not self._ensure_docker_ready():
+            return
+
+        dialog = RebuildImageDialog(
+            self.current_project.path,
+            self.current_project.name,
+            self
+        )
+        dialog.rebuild_finished.connect(self._reload_current)
+        dialog.exec()
+
     def _notify(self, title: str, msg: str, notify_type: str = "success"):
         """发送通知（InfoBar + 系统托盘）
 
@@ -2233,6 +2252,8 @@ class MainWindow(FluentWindow):
         # 直接将仪表盘页加入 stackedWidget
         self.dashboard_page = ProjectDashboardPage(self)
         self.stackedWidget.addWidget(self.dashboard_page)
+        self.task_center_page = TaskCenterPage(self)
+        self.stackedWidget.addWidget(self.task_center_page)
         self.stackedWidget.setCurrentWidget(self.dashboard_page)
 
         # 底部操作项
@@ -2250,6 +2271,11 @@ class MainWindow(FluentWindow):
             routeKey='stop_all', icon=FIF.PAUSE, text="停止全部",
             onClick=self.stop_all_projects, position=NavigationItemPosition.BOTTOM,
             selectable=False
+        )
+        self.navigationInterface.addItem(
+            routeKey='task_center', icon=FIF.DATE_TIME, text="定时任务",
+            onClick=self.open_task_center, position=NavigationItemPosition.BOTTOM,
+            selectable=True
         )
         self.navigationInterface.addSeparator(position=NavigationItemPosition.BOTTOM)
         self.navigationInterface.addItem(
@@ -2344,6 +2370,7 @@ class MainWindow(FluentWindow):
         """项目列表加载完成回调"""
         self.projects = projects
         self.dashboard_page.projects = self.projects
+        self.task_center_page.set_projects(self.projects)
 
         # 在 SCROLL 区域插入项目导航项
         for idx, project in enumerate(self.projects):
@@ -2375,6 +2402,11 @@ class MainWindow(FluentWindow):
             self.on_project_clicked(self.projects[0])
         else:
             self.dashboard_page.show_project_view(False)
+
+    def open_task_center(self):
+        self.navigationInterface.setCurrentItem("task_center")
+        self.task_center_page.set_projects(self.projects)
+        self.switchTo(self.task_center_page)
 
     def on_project_clicked(self, project: Project):
         """导航项点击 —— 更新仪表盘"""

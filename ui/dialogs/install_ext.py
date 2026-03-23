@@ -1,7 +1,7 @@
 """安装扩展对话框"""
 import os
 import html
-from typing import List
+from typing import List, Optional
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from pathlib import Path
@@ -126,7 +126,7 @@ class InstallExtWorker(QThread):
 class InstallExtDialog(FluentDialog):
     """安装扩展对话框"""
 
-    def __init__(self, project_path: Path, project_name: str, parent=None, initial_extensions: List[str] | None = None):
+    def __init__(self, project_path: Path, project_name: str, parent=None, initial_extensions: Optional[List[str]] = None):
         super().__init__(parent)
         self.project_path = project_path
         self.project_name = project_name

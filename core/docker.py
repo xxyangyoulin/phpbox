@@ -386,6 +386,67 @@ class DockerManager:
         """重启单个服务"""
         return self._run_command(["restart", service])
 
+    def start_service(self, service: str, build: bool = False,
+                      proxy: Optional[str] = None) -> DockerResult:
+        """启动单个服务"""
+        args = ["up", "-d"]
+        if build:
+            args.append("--build")
+        args.append(service)
+        env = None
+        if proxy:
+            env = {
+                "HTTP_PROXY": proxy,
+                "HTTPS_PROXY": proxy,
+                "http_proxy": proxy,
+                "https_proxy": proxy,
+            }
+        return self._run_command(args, env=env)
+
+    def stop_service(self, service: str) -> DockerResult:
+        """停止单个服务"""
+        return self._run_command(["stop", service])
+
+    def has_service(self, service: str) -> bool:
+        """检测 compose 中是否存在服务"""
+        compose_file = self.project_path / "docker-compose.yml"
+        if not compose_file.exists():
+            return False
+        try:
+            content = compose_file.read_text(encoding="utf-8")
+            return bool(re.search(rf"^\s{{2}}{re.escape(service)}:\s*$", content, re.MULTILINE))
+        except Exception:
+            return False
+
+    def is_service_running(self, service: str) -> bool:
+        """检测服务是否运行"""
+        try:
+            result = subprocess.run(
+                self.get_compose_command() + [
+                    "ps", "--status", "running",
+                    "--format", "{{.Service}}", service
+                ],
+                cwd=str(self.project_path),
+                capture_output=True, text=True, timeout=10
+            )
+            return service in result.stdout.splitlines()
+        except Exception:
+            return False
+
+    def apply_project_cron_file(self, cron_file_path: str) -> DockerResult:
+        """将项目内生成的 cron 文件装载到 cron 服务"""
+        return self.exec_command(
+            "cron",
+            ["sh", "-lc", f"crontab {cron_file_path}"]
+        )
+
+    def run_task_now(self, task_id: str) -> DockerResult:
+        """立即执行任务"""
+        return self.exec_command(
+            "cron",
+            ["sh", "-lc", f"/var/www/html/.phpbox/tasks/run_task.sh {task_id}"]
+        )
+
     def get_image_name(self) -> str:
         """获取 PHP 镜像名称"""
         try:

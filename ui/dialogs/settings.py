@@ -10,7 +10,7 @@ from qfluentwidgets import (
 )
 
 from core.settings import Settings
-from core.proxy import detect_system_proxy
+from core.proxy import detect_system_proxy, sync_all_projects_proxy
 from ui.dialogs.environment_diagnostics import EnvironmentDiagnosticsDialog
 from ui.styles import FluentDialog, apply_theme
 
@@ -217,6 +217,8 @@ class SettingsDialog(FluentDialog):
             self.proxy_port_input.text().strip(),
             self.proxy_enabled_cb.isChecked()
         )
+        current_proxy = self.settings.get_proxy()
+        sync_result = sync_all_projects_proxy(current_proxy)
 
         # 保存并立即应用主题
         theme_index = self.theme_combo.currentIndex()
@@ -233,7 +235,10 @@ class SettingsDialog(FluentDialog):
 
         InfoBar.success(
             title="成功",
-            content="设置已保存",
+            content=(
+                f"设置已保存，已同步 {sync_result['dockerfiles']} 个项目 Dockerfile，"
+                f"{sync_result['running_containers']} 个运行中容器的 zshrc"
+            ),
             orient=Qt.Orientation.Horizontal,
             parent=self.window()
         )

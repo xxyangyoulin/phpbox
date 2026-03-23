@@ -1,5 +1,6 @@
 """环境诊断对话框"""
 import shutil
+from typing import List, Tuple
 
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout, QWidget
 from PyQt6.QtCore import Qt
@@ -104,7 +105,7 @@ class EnvironmentDiagnosticsDialog(FluentDialog):
 
         layout.addLayout(btn_layout)
 
-    def _add_group(self, title: str, rows: list[tuple[str, str, bool]]):
+    def _add_group(self, title: str, rows: List[Tuple[str, str, bool]]):
         card = CardWidget(self)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(18, 16, 18, 16)
