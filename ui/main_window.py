@@ -1,6 +1,7 @@
 """主窗口"""
 import os
 import re
+import json
 import shlex
 import subprocess
 import shutil
@@ -14,7 +15,7 @@ from typing import Optional, List
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QSystemTrayIcon, QApplication, QGridLayout, QSizePolicy,
-    QGraphicsOpacityEffect, QLabel
+    QGraphicsOpacityEffect, QLabel, QFrame
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QIcon, QAction, QPainter, QColor, QBrush, QPen, QFont, QPixmap, QCursor
@@ -25,7 +26,7 @@ from qfluentwidgets import (
     BodyLabel, StrongBodyLabel, CaptionLabel, TitleLabel, ImageLabel,
     CardWidget, ScrollArea, FlowLayout, HorizontalSeparator,
     FluentIcon as FIF, InfoBar, InfoBarPosition, MessageBox,
-    SystemTrayMenu, Action, RoundMenu, IconWidget
+    SystemTrayMenu, Action, RoundMenu, IconWidget, TextEdit, CheckBox
 )
 
 from core.project import ProjectManager, Project, get_port_usage, get_project_code_path
@@ -45,6 +46,49 @@ from ui.styles import themed_color
 
 
 _dir_size_cache: dict = {}  # {path: (timestamp, size)}
+SCRIPTS_DIR_NAME = ".phpbox"
+SCRIPTS_FILE_NAME = "scripts.json"
+DEFAULT_PROJECT_SCRIPTS = [
+    {
+        "name": "推送当前分支并部署到测试服",
+        "description": "请先按需修改 SSH 主机和远程项目目录",
+        "confirm": True,
+        "command": """#!/usr/bin/env bash
+set -e
+
+branch_name="${current_branch}"
+
+if [[ -z "$branch_name" ]]; then
+    echo "无法获取当前分支"
+    exit 1
+fi
+
+echo "📦 项目目录: ${project_dir}"
+echo "🌿 当前分支: $branch_name"
+
+echo "⬆️ 推送 origin/$branch_name"
+git pull
+git push
+
+echo "🚀 远程部署分支: $branch_name"
+ssh root@example.com "cd '/path/to/remote/project' && /usr/local/bin/gmr '$branch_name'"
+
+echo "✅ 部署完成"
+""",
+    },
+    {
+        "name": "Composer 安装",
+        "description": "在当前项目目录执行 composer install",
+        "confirm": False,
+        "command": "phpbox composer install",
+    },
+    {
+        "name": "运行测试",
+        "description": "按项目当前目录执行测试命令",
+        "confirm": False,
+        "command": "phpbox php vendor/bin/phpunit",
+    },
+]
 
 def get_dir_size(path: Path) -> int:
     """获取目录大小（字节），缓存 60 秒"""
@@ -70,6 +114,53 @@ def format_size(size_bytes: int) -> str:
             return f"{size_bytes:.1f}{unit}" if unit != 'B' else f"{size_bytes}{unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f}PB"
+
+
+def get_project_scripts_file(project_path: Path) -> Path:
+    return project_path / SCRIPTS_DIR_NAME / SCRIPTS_FILE_NAME
+
+
+def load_project_scripts(project_path: Path) -> list[dict]:
+    scripts_file = get_project_scripts_file(project_path)
+    if not scripts_file.exists():
+        save_project_scripts(project_path, DEFAULT_PROJECT_SCRIPTS)
+        return [script.copy() for script in DEFAULT_PROJECT_SCRIPTS]
+
+    try:
+        scripts = json.loads(scripts_file.read_text())
+    except Exception:
+        scripts = []
+
+    if not isinstance(scripts, list):
+        scripts = []
+
+    normalized = []
+    for script in scripts:
+        if not isinstance(script, dict):
+            continue
+        name = str(script.get("name", "")).strip()
+        command = str(script.get("command", "")).strip()
+        if not name or not command:
+            continue
+        normalized.append({
+            "name": name,
+            "description": str(script.get("description", "")).strip(),
+            "confirm": bool(script.get("confirm", False)),
+            "command": command,
+        })
+
+    if not normalized:
+        save_project_scripts(project_path, DEFAULT_PROJECT_SCRIPTS)
+        return [script.copy() for script in DEFAULT_PROJECT_SCRIPTS]
+
+    return normalized
+
+
+def save_project_scripts(project_path: Path, scripts: list[dict]):
+    scripts_dir = project_path / SCRIPTS_DIR_NAME
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    scripts_file = get_project_scripts_file(project_path)
+    scripts_file.write_text(json.dumps(scripts, ensure_ascii=False, indent=2) + "\n")
 
 
 # 项目图标颜色表
@@ -328,6 +419,10 @@ class ModernDashboardWidget(ScrollArea):
     # PHP 配置点击信号
     config_clicked = pyqtSignal(str)
     extension_install_requested = pyqtSignal(str)
+    script_add_requested = pyqtSignal()
+    script_edit_requested = pyqtSignal(int)
+    script_delete_requested = pyqtSignal(int)
+    script_run_requested = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -512,6 +607,30 @@ class ModernDashboardWidget(ScrollArea):
         for index, card in enumerate(overview_cards):
             self.overview_grid.addWidget(card, index // 2, index % 2)
         layout.addLayout(self.overview_grid)
+
+        # --- 项目脚本卡片 ---
+        self.scripts_card = CardWidget()
+        scripts_layout = QVBoxLayout(self.scripts_card)
+        scripts_layout.setContentsMargins(24, 20, 24, 20)
+        scripts_layout.setSpacing(16)
+
+        scripts_header = QHBoxLayout()
+        scripts_header.addWidget(StrongBodyLabel("项目脚本"))
+        scripts_header.addStretch()
+        self.add_script_btn = PushButton(FIF.ADD, "新增脚本")
+        scripts_header.addWidget(self.add_script_btn)
+        scripts_layout.addLayout(scripts_header)
+
+        self.scripts_hint_label = CaptionLabel("在项目目录执行常用脚本，支持 ${project_dir}、${project_name}、${current_branch}")
+        self.scripts_hint_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
+        scripts_layout.addWidget(self.scripts_hint_label)
+
+        self.scripts_container = QWidget()
+        self.scripts_list_layout = QVBoxLayout(self.scripts_container)
+        self.scripts_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.scripts_list_layout.setSpacing(10)
+        scripts_layout.addWidget(self.scripts_container)
+        layout.addWidget(self.scripts_card)
 
         # --- 工具与操作卡片 ---
         self.tools_card = CardWidget()
@@ -728,6 +847,7 @@ class ModernDashboardWidget(ScrollArea):
         self._missing_extensions = []
         self._set_advanced_config_visible(False)
         self._refresh_header_actions(False, False)
+        self.add_script_btn.clicked.connect(self.script_add_requested.emit)
 
     def _copy_path(self, event):
         """点击复制项目路径"""
@@ -769,6 +889,16 @@ class ModernDashboardWidget(ScrollArea):
                     widget.deleteLater()
             elif hasattr(item, 'deleteLater'):
                 item.deleteLater()
+
+    def _clear_box_layout(self, layout: QVBoxLayout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget:
+                widget.deleteLater()
+            elif child_layout:
+                self._clear_box_layout(child_layout)
 
     def _create_extension_label(self, ext: str) -> CaptionLabel:
         label = CaptionLabel(ext)
@@ -816,6 +946,58 @@ class ModernDashboardWidget(ScrollArea):
         self.missing_ext_toggle_btn.setVisible(len(self._missing_extensions) > 10)
         self.missing_ext_toggle_btn.setText("收起未安装扩展" if self._missing_extensions_expanded else "展开全部未安装扩展")
         QTimer.singleShot(0, lambda: self.missing_ext_layout._doLayout(self.missing_ext_container.rect(), True))
+
+    def set_project_scripts(self, scripts: list[dict]):
+        self._clear_box_layout(self.scripts_list_layout)
+
+        if not scripts:
+            empty_label = CaptionLabel("暂无项目脚本")
+            empty_label.setStyleSheet(f"color: {themed_color('#94a3b8', '#64748b')};")
+            self.scripts_list_layout.addWidget(empty_label)
+            return
+
+        for index, script in enumerate(scripts):
+            card = QFrame()
+            card.setStyleSheet(
+                f"QFrame {{"
+                f"background-color: {themed_color('#f8fafc', 'rgba(148,163,184,0.08)')};"
+                f"border: 1px solid {themed_color('#e2e8f0', '#334155')};"
+                f"border-radius: 10px;"
+                f"}}"
+            )
+            row_layout = QHBoxLayout(card)
+            row_layout.setContentsMargins(14, 12, 14, 12)
+            row_layout.setSpacing(12)
+
+            info_layout = QVBoxLayout()
+            info_layout.setSpacing(2)
+            name_label = StrongBodyLabel(script["name"])
+            desc = script.get("description", "").strip()
+            desc_label = CaptionLabel(desc or "在当前项目目录执行脚本")
+            desc_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
+            desc_label.setWordWrap(True)
+            info_layout.addWidget(name_label)
+            info_layout.addWidget(desc_label)
+            row_layout.addLayout(info_layout, 1)
+
+            if script.get("confirm"):
+                confirm_label = CaptionLabel("执行前确认")
+                confirm_label.setStyleSheet(f"color: {themed_color('#f59e0b', '#fbbf24')};")
+                row_layout.addWidget(confirm_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+            run_btn = PrimaryPushButton(FIF.PLAY, "执行")
+            edit_btn = PushButton(FIF.EDIT, "编辑")
+            delete_btn = PushButton(FIF.DELETE, "删除")
+            run_btn.clicked.connect(lambda checked=False, i=index: self.script_run_requested.emit(i))
+            edit_btn.clicked.connect(lambda checked=False, i=index: self.script_edit_requested.emit(i))
+            delete_btn.clicked.connect(lambda checked=False, i=index: self.script_delete_requested.emit(i))
+            row_layout.addWidget(run_btn)
+            row_layout.addWidget(edit_btn)
+            row_layout.addWidget(delete_btn)
+
+            self.scripts_list_layout.addWidget(card)
+
+        self.scripts_list_layout.addStretch(1)
 
     def _refresh_header_actions(self, is_running: bool, is_partial: bool):
         while self.header_action_layout.count():
@@ -1127,6 +1309,10 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.rename_action.triggered.connect(self.rename_project)
         self.dashboard.change_port_action.triggered.connect(self.change_port)
         self.dashboard.alert_action_btn.clicked.connect(self.view_logs)
+        self.dashboard.script_add_requested.connect(self.add_project_script)
+        self.dashboard.script_edit_requested.connect(self.edit_project_script)
+        self.dashboard.script_delete_requested.connect(self.delete_project_script)
+        self.dashboard.script_run_requested.connect(self.run_project_script)
         layout.addWidget(self.dashboard, 1)
 
         self.show_project_view(False)
@@ -1166,6 +1352,7 @@ class ProjectDashboardPage(QWidget):
         """
         self.current_project = project
         self.dashboard.update_project(project, loading=loading, animate=True)
+        self.dashboard.set_project_scripts(load_project_scripts(Path(project.path)))
         self.show_project_view(True)
 
         # 滚动到顶部
@@ -1181,6 +1368,7 @@ class ProjectDashboardPage(QWidget):
                 if p.name == self.current_project.name:
                     self.current_project = p
                     self.dashboard.update_project(p)
+                    self.dashboard.set_project_scripts(load_project_scripts(Path(p.path)))
                     # 通知主窗口刷新对应的侧边栏图标状态
                     main_win = self.window()
                     if hasattr(main_win, 'update_sidebar_item_state'):
@@ -1807,6 +1995,206 @@ class ProjectDashboardPage(QWidget):
             package = box.package_input.text().strip()
             if package:
                 self._run_composer_command("require", package)
+
+    def _get_current_project_scripts(self) -> list[dict]:
+        if not self.current_project:
+            return []
+        return load_project_scripts(Path(self.current_project.path))
+
+    def _save_current_project_scripts(self, scripts: list[dict]):
+        if not self.current_project:
+            return
+        save_project_scripts(Path(self.current_project.path), scripts)
+        self.dashboard.set_project_scripts(scripts)
+
+    def _show_script_dialog(self, script: Optional[dict] = None) -> Optional[dict]:
+        from qfluentwidgets import MessageBoxBase, LineEdit
+
+        box = MessageBoxBase(self.window())
+        box.titleLabel = StrongBodyLabel("项目脚本")
+        box.contentLabel = CaptionLabel("脚本会在当前项目目录执行，支持 ${project_dir}、${project_name}、${current_branch}")
+
+        box.name_input = LineEdit(box)
+        box.name_input.setPlaceholderText("脚本名称")
+        box.name_input.setText((script or {}).get("name", ""))
+        box.name_input.setClearButtonEnabled(True)
+
+        box.desc_input = LineEdit(box)
+        box.desc_input.setPlaceholderText("脚本说明")
+        box.desc_input.setText((script or {}).get("description", ""))
+        box.desc_input.setClearButtonEnabled(True)
+
+        box.confirm_cb = CheckBox("执行前确认", box)
+        box.confirm_cb.setChecked(bool((script or {}).get("confirm", False)))
+
+        box.command_input = TextEdit(box)
+        box.command_input.setPlaceholderText("请输入脚本命令")
+        box.command_input.setMinimumHeight(220)
+        box.command_input.setPlainText((script or {}).get("command", ""))
+
+        box.viewLayout.addWidget(box.contentLabel)
+        box.viewLayout.addWidget(box.name_input)
+        box.viewLayout.addWidget(box.desc_input)
+        box.viewLayout.addWidget(box.confirm_cb)
+        box.viewLayout.addWidget(box.command_input)
+
+        box.yesButton.setText("保存")
+        box.cancelButton.setText("取消")
+
+        if not box.exec():
+            return None
+
+        name = box.name_input.text().strip()
+        command = box.command_input.toPlainText().strip()
+        if not name or not command:
+            InfoBar.warning(
+                title="提示",
+                content="脚本名称和命令不能为空",
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+            return None
+
+        return {
+            "name": name,
+            "description": box.desc_input.text().strip(),
+            "confirm": box.confirm_cb.isChecked(),
+            "command": command,
+        }
+
+    def _get_current_branch(self, project_path: Path) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+        except Exception:
+            return ""
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
+
+    def _render_script_command(self, command: str) -> str:
+        if not self.current_project:
+            return command
+
+        project_path = Path(self.current_project.path)
+        current_branch = self._get_current_branch(project_path)
+        if "${current_branch}" in command and not current_branch:
+            raise RuntimeError("当前项目不是有效的 Git 仓库，或无法获取当前分支")
+
+        return (
+            command
+            .replace("${project_dir}", str(project_path))
+            .replace("${project_name}", self.current_project.name)
+            .replace("${current_branch}", current_branch)
+        )
+
+    def _run_script_in_terminal(self, name: str, command: str):
+        if not self.current_project:
+            return
+
+        project_dir = str(self.current_project.path)
+        shell_body = (
+            f"cd {shlex.quote(project_dir)} && "
+            f"bash -lc {shlex.quote(command)}; "
+            "exit_code=$?; "
+            "echo; "
+            f"echo '脚本执行完成: {name}'; "
+            "echo \"退出码: $exit_code\"; "
+            "exec $SHELL"
+        )
+
+        terminal = os.environ.get("TERMINAL") or "x-terminal-emulator"
+        self._launch_terminal([
+            [terminal, "-e", "sh", "-c", shell_body],
+            ["deepin-terminal", "-C", shell_body],
+            ["kitty", "--directory", project_dir, "sh", "-c", shell_body],
+            ["alacritty", "--working-directory", project_dir, "-e", "sh", "-c", shell_body],
+            ["gnome-terminal", "--working-directory", project_dir, "--", "sh", "-c", shell_body],
+            ["konsole", "--workdir", project_dir, "-e", "sh", "-c", shell_body],
+            ["xfce4-terminal", "--working-directory", project_dir, "-e", shell_body],
+            ["xterm", "-e", "sh", "-c", shell_body],
+        ])
+
+    def add_project_script(self):
+        if not self.current_project:
+            return
+
+        script = self._show_script_dialog()
+        if not script:
+            return
+
+        scripts = self._get_current_project_scripts()
+        scripts.append(script)
+        self._save_current_project_scripts(scripts)
+        self._notify("脚本已保存", script["name"], "success")
+
+    def edit_project_script(self, index: int):
+        scripts = self._get_current_project_scripts()
+        if index < 0 or index >= len(scripts):
+            return
+
+        updated = self._show_script_dialog(scripts[index])
+        if not updated:
+            return
+
+        scripts[index] = updated
+        self._save_current_project_scripts(scripts)
+        self._notify("脚本已更新", updated["name"], "success")
+
+    def delete_project_script(self, index: int):
+        scripts = self._get_current_project_scripts()
+        if index < 0 or index >= len(scripts):
+            return
+
+        script = scripts[index]
+        box = MessageBox(
+            "删除脚本",
+            f"确定删除脚本 \"{script['name']}\" 吗？",
+            self
+        )
+        box.yesButton.setText("删除")
+        box.cancelButton.setText("取消")
+        if not box.exec():
+            return
+
+        del scripts[index]
+        self._save_current_project_scripts(scripts)
+        self._notify("脚本已删除", script["name"], "success")
+
+    def run_project_script(self, index: int):
+        scripts = self._get_current_project_scripts()
+        if index < 0 or index >= len(scripts):
+            return
+
+        script = scripts[index]
+        if script.get("confirm"):
+            box = MessageBox(
+                "执行脚本",
+                f"确定执行脚本 \"{script['name']}\" 吗？",
+                self
+            )
+            box.yesButton.setText("执行")
+            box.cancelButton.setText("取消")
+            if not box.exec():
+                return
+
+        try:
+            command = self._render_script_command(script["command"])
+        except RuntimeError as e:
+            InfoBar.error(
+                title="执行失败",
+                content=str(e),
+                orient=Qt.Orientation.Horizontal,
+                parent=self
+            )
+            return
+
+        self._run_script_in_terminal(script["name"], command)
 
     def _notify(self, title: str, msg: str, notify_type: str = "success"):
         """发送通知（InfoBar + 系统托盘）
