@@ -39,6 +39,55 @@ python main.py
 3. 勾选需要的 PHP 扩展
 4. 点击创建，自动生成 Docker 配置并启动容器
 
+## 命令行
+
+phpbox 同时提供常用 CLI，适合在终端里快速管理项目。
+
+### 常用命令
+
+```bash
+phpbox list
+phpbox ps
+phpbox status test
+phpbox up test
+phpbox stop test
+phpbox down test
+phpbox restart test
+phpbox logs test
+phpbox build test
+phpbox rebuild test --no-cache
+phpbox doctor
+```
+
+### 在项目目录中直接执行
+
+如果当前目录位于某个项目目录或其子目录中，以下命令会自动选中当前项目：
+
+```bash
+phpbox ps
+phpbox up
+phpbox stop
+phpbox down
+phpbox restart
+phpbox logs
+phpbox logs --no-follow
+phpbox shell
+phpbox shell nginx
+phpbox php -v
+phpbox composer install
+phpbox artisan migrate
+phpbox think queue:listen
+phpbox build
+phpbox rebuild --no-cache
+```
+
+这意味着你不需要再额外输入项目名称，直接在项目目录里执行即可。
+
+- `phpbox up` 等价于启动项目
+- `phpbox stop` 仅停止容器
+- `phpbox down` 会执行 `docker compose down`，停止并移除项目容器
+- `phpbox logs` 默认持续追踪日志，若只查看当前日志可加 `--no-follow`
+
 ## 构建
 
 ```bash

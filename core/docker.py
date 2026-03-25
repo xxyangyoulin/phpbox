@@ -311,13 +311,38 @@ class DockerManager:
             args.append("local")
         return self._run_command(args)
 
-    def build(self, proxy: Optional[str] = None) -> DockerResult:
+    def build(self, proxy: Optional[str] = None, no_cache: bool = False) -> DockerResult:
         """构建镜像"""
         env = {}
         if proxy:
             env["HTTP_PROXY"] = proxy
             env["HTTPS_PROXY"] = proxy
-        return self._run_command(["build"], env=env)
+        args = ["build"]
+        if no_cache:
+            args.append("--no-cache")
+        return self._run_command(args, env=env)
+
+    def build_live(self, proxy: Optional[str] = None, no_cache: bool = False) -> int:
+        """实时输出构建日志"""
+        if not self._compose_cmd:
+            print("未检测到 docker compose 或 docker-compose", file=sys.stderr)
+            return 1
+
+        env = os.environ.copy()
+        if proxy:
+            env["HTTP_PROXY"] = proxy
+            env["HTTPS_PROXY"] = proxy
+
+        args = ["build"]
+        if no_cache:
+            args.append("--no-cache")
+
+        result = subprocess.run(
+            self._compose_cmd + args,
+            cwd=str(self.project_path),
+            env=env
+        )
+        return result.returncode
 
     def get_logs(self, service: Optional[str] = None,
                  follow: bool = False) -> subprocess.Popen:

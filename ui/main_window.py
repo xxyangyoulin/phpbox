@@ -531,7 +531,6 @@ class ModernDashboardWidget(ScrollArea):
         self.terminal_btn = ToolCard(FIF.COMMAND_PROMPT, "进入终端")
         self.docker_btn = ToolCard(FIF.CODE, "进入容器")
         self.config_btn = ToolCard(FIF.SETTING, "编辑配置")
-        self.alias_btn = ToolCard(FIF.COPY, "复制 alias")
         
         self.composer_install_btn = ToolCard(FIF.DOWNLOAD, "安装依赖")
         self.composer_update_btn = ToolCard(FIF.SYNC, "更新依赖")
@@ -574,7 +573,7 @@ class ModernDashboardWidget(ScrollArea):
         )
         advanced_group = create_tool_group(
             "高级操作",
-            [self.alias_btn, self.composer_update_btn, self.composer_require_btn, self.xdebug_btn, self.code_log_btn, self.clear_logs_btn]
+            [self.composer_update_btn, self.composer_require_btn, self.xdebug_btn, self.code_log_btn, self.clear_logs_btn]
         )
 
         tools_content_layout.addLayout(common_group)
@@ -1116,7 +1115,6 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.docker_btn.clicked.connect(self.open_docker_terminal)
         self.dashboard.delete_action.triggered.connect(self.delete_project)
         self.dashboard.folder_btn_header.clicked.connect(self.open_folder)
-        self.dashboard.alias_btn.clicked.connect(self.copy_alias)
         self.dashboard.xdebug_btn.clicked.connect(self.configure_xdebug)
         self.dashboard.config_refresh_btn.clicked.connect(self._refresh_php_info)
         self.dashboard.config_clicked.connect(self._on_php_config_clicked)
@@ -1490,31 +1488,6 @@ class ProjectDashboardPage(QWidget):
                 content="无法打开目录，请确认系统已安装 xdg-open 或 gio",
                 parent=self
             )
-
-    def copy_alias(self):
-        if not self.current_project:
-            return
-        name, path = self.current_project.name, self.current_project.path
-        docker = DockerManager(path)
-        compose_text = docker.get_compose_command_text()
-        shell_alias = "sh -lc 'if command -v zsh >/dev/null 2>&1; then exec zsh; elif command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi'"
-        aliases = (
-            f"# PHP 项目: {name}\n"
-            f"alias {name}='cd {path} && {compose_text}'\n"
-            f"alias {name}-php='cd {path} && {compose_text} exec php php'\n"
-            f"alias {name}-composer='cd {path} && {compose_text} exec php composer'\n"
-            f"alias {name}-shell='cd {path} && {compose_text} exec php {shell_alias}'"
-        )
-        QApplication.clipboard().setText(aliases)
-        InfoBar.success(
-            title="复制成功",
-            content="Alias 命令已复制到剪贴板。可用于终端快速操作。",
-            orient=Qt.Orientation.Horizontal,
-            isClosable=True,
-            position=InfoBarPosition.TOP,
-            duration=3000,
-            parent=self
-        )
 
     def clear_logs(self):
         """清理项目日志"""
