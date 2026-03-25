@@ -42,13 +42,15 @@ class Project:
     is_running: bool = False
     php_running: bool = False
     nginx_running: bool = False
+    mysql_running: bool = False
+    redis_running: bool = False
     auto_restart: bool = True  # 是否开机自启
 
     @property
     def status_text(self) -> str:
         if self.php_running and self.nginx_running:
             return "运行中"
-        if self.php_running or self.nginx_running:
+        if self.php_running or self.nginx_running or self.mysql_running or self.redis_running:
             return "部分运行"
         return "已停止"
 
@@ -56,7 +58,7 @@ class Project:
     def health_status(self) -> str:
         if self.php_running and self.nginx_running:
             return "healthy"
-        if self.php_running or self.nginx_running:
+        if self.php_running or self.nginx_running or self.mysql_running or self.redis_running:
             return "partial"
         return "stopped"
 
@@ -64,7 +66,22 @@ class Project:
     def health_summary(self) -> str:
         php_text = "运行" if self.php_running else "停止"
         nginx_text = "运行" if self.nginx_running else "停止"
-        return f"PHP {php_text} / Nginx {nginx_text}"
+        parts = [f"PHP {php_text}", f"Nginx {nginx_text}"]
+        if self.has_service("mysql"):
+            parts.append(f"MySQL {'运行' if self.mysql_running else '停止'}")
+        if self.has_service("redis"):
+            parts.append(f"Redis {'运行' if self.redis_running else '停止'}")
+        return " / ".join(parts)
+
+    def has_service(self, service: str) -> bool:
+        compose_file = self.path / "docker-compose.yml"
+        if not compose_file.exists():
+            return False
+        try:
+            content = compose_file.read_text()
+        except Exception:
+            return False
+        return re.search(rf"^  {re.escape(service)}:\n", content, re.MULTILINE) is not None
 
 
 class ProjectManager:
@@ -99,6 +116,8 @@ class ProjectManager:
         port = self._get_port(path)
         php_running = self._check_service_running(path, "php")
         nginx_running = self._check_service_running(path, "nginx")
+        mysql_running = self._check_service_running(path, "mysql")
+        redis_running = self._check_service_running(path, "redis")
         is_running = php_running and nginx_running
         auto_restart = self._get_auto_restart(path)
 
@@ -110,6 +129,8 @@ class ProjectManager:
             is_running=is_running,
             php_running=php_running,
             nginx_running=nginx_running,
+            mysql_running=mysql_running,
+            redis_running=redis_running,
             auto_restart=auto_restart
         )
 

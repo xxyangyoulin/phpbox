@@ -77,15 +77,15 @@ def _build_parser():
 
     logs_parser = subparsers.add_parser("logs", help="查看项目日志")
     logs_parser.add_argument("name", nargs="?", help="项目名称")
-    logs_parser.add_argument("--service", choices=["php", "nginx"], help="指定服务")
+    logs_parser.add_argument("--service", choices=["php", "nginx", "mysql", "redis"], help="指定服务")
     logs_parser.add_argument("--follow", "-f", action="store_true", default=True, help="持续追踪日志输出")
     logs_parser.add_argument("--no-follow", action="store_false", dest="follow", help="只输出当前日志，不持续追踪")
 
     shell_parser = subparsers.add_parser("shell", help="进入当前项目容器")
-    shell_parser.add_argument("service", nargs="?", choices=["php", "nginx"], default="php", help="容器服务名")
+    shell_parser.add_argument("service", nargs="?", choices=["php", "nginx", "mysql", "redis"], default="php", help="容器服务名")
 
     exec_parser = subparsers.add_parser("exec", help="在当前项目容器中执行命令")
-    exec_parser.add_argument("service", choices=["php", "nginx"], help="容器服务名")
+    exec_parser.add_argument("service", choices=["php", "nginx", "mysql", "redis"], help="容器服务名")
     exec_parser.add_argument("args", nargs=argparse.REMAINDER, help="要执行的命令，使用 -- 与 phpbox 参数分隔")
 
     php_parser = subparsers.add_parser("php", help="在当前项目中执行 php 命令")
@@ -261,6 +261,23 @@ def _print_project(project):
     )
 
 
+def _print_project_detail(project):
+    print(f"名称: {project.name}")
+    print(f"路径: {project.path}")
+    print(f"状态: {project.status_text}")
+    print(f"健康: {project.health_summary}")
+    print(f"PHP: {project.php_version}")
+    print(f"端口: {project.port}")
+    print(f"自启动: {'开启' if project.auto_restart else '关闭'}")
+    print(f"服务状态: PHP {'运行' if project.php_running else '停止'} / Nginx {'运行' if project.nginx_running else '停止'}")
+    if project.has_service("mysql"):
+        print(f"MySQL: {'运行' if project.mysql_running else '停止'}")
+    if project.has_service("redis"):
+        print(f"Redis: {'运行' if project.redis_running else '停止'}")
+    if project.port.isdigit():
+        print(f"访问地址: http://localhost:{project.port}")
+
+
 def _run_cli(args) -> int:
     manager = ProjectManager()
     command = args.command
@@ -287,28 +304,12 @@ def _run_cli(args) -> int:
             if not project:
                 _print_project_not_found(target_name)
                 return 1
-            print(f"名称: {project.name}")
-            print(f"路径: {project.path}")
-            print(f"状态: {project.status_text}")
-            print(f"健康: {project.health_summary}")
-            print(f"PHP: {project.php_version}")
-            print(f"端口: {project.port}")
-            print(f"自启动: {'开启' if project.auto_restart else '关闭'}")
-            if project.port.isdigit():
-                print(f"访问地址: http://localhost:{project.port}")
+            _print_project_detail(project)
             return 0
 
         current_project = _find_project_by_cwd(manager, Path.cwd())
         if current_project:
-            print(f"名称: {current_project.name}")
-            print(f"路径: {current_project.path}")
-            print(f"状态: {current_project.status_text}")
-            print(f"健康: {current_project.health_summary}")
-            print(f"PHP: {current_project.php_version}")
-            print(f"端口: {current_project.port}")
-            print(f"自启动: {'开启' if current_project.auto_restart else '关闭'}")
-            if current_project.port.isdigit():
-                print(f"访问地址: http://localhost:{current_project.port}")
+            _print_project_detail(current_project)
             return 0
 
         projects = manager.get_all_projects()

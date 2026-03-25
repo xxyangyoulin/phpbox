@@ -299,7 +299,7 @@ class CreateProjectDialog(FluentDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("创建新项目")
-        self.setMinimumSize(680, 580)
+        self.setMinimumSize(720, 700)
         self.project_manager = ProjectManager()
         self._current_step = 0
         self._created_project_name: Optional[str] = None
@@ -482,7 +482,7 @@ class CreateProjectDialog(FluentDialog):
 
         # 折叠内容
         self._adv_content = QWidget()
-        self._adv_content.setVisible(False)
+        self._adv_content.setVisible(True)
         adv_c_layout = QVBoxLayout(self._adv_content)
         adv_c_layout.setSpacing(12)
         adv_c_layout.setContentsMargins(0, 8, 0, 4)
@@ -534,13 +534,86 @@ class CreateProjectDialog(FluentDialog):
         self.proxy_converted.setStyleSheet("color: #64748b;")
         adv_c_layout.addWidget(self.proxy_converted)
 
+        # 附加服务
+        adv_c_layout.addWidget(BodyLabel("附加服务"))
+
+        mysql_card = CardWidget()
+        mysql_layout = QVBoxLayout(mysql_card)
+        mysql_layout.setContentsMargins(12, 12, 12, 12)
+        mysql_layout.setSpacing(8)
+        self.mysql_enabled_cb = CheckBox("启用 MySQL")
+        self.mysql_enabled_cb.stateChanged.connect(self._on_mysql_toggled)
+        mysql_layout.addWidget(self.mysql_enabled_cb)
+
+        mysql_grid_1 = QHBoxLayout()
+        mysql_grid_1.addWidget(BodyLabel("端口"))
+        self.mysql_port_spin = SpinBox()
+        self.mysql_port_spin.setRange(1, 65535)
+        self.mysql_port_spin.setValue(3306)
+        mysql_grid_1.addWidget(self.mysql_port_spin)
+        mysql_grid_1.addWidget(BodyLabel("数据库"))
+        self.mysql_database_input = LineEdit()
+        self.mysql_database_input.setPlaceholderText("默认使用项目名")
+        mysql_grid_1.addWidget(self.mysql_database_input, 1)
+        mysql_layout.addLayout(mysql_grid_1)
+
+        mysql_grid_2 = QHBoxLayout()
+        mysql_grid_2.addWidget(BodyLabel("用户名"))
+        self.mysql_user_input = LineEdit()
+        self.mysql_user_input.setText("app")
+        mysql_grid_2.addWidget(self.mysql_user_input)
+        mysql_grid_2.addWidget(BodyLabel("密码"))
+        self.mysql_password_input = LineEdit()
+        self.mysql_password_input.setText("app")
+        mysql_grid_2.addWidget(self.mysql_password_input)
+        mysql_layout.addLayout(mysql_grid_2)
+
+        mysql_grid_3 = QHBoxLayout()
+        mysql_grid_3.addWidget(BodyLabel("Root 密码"))
+        self.mysql_root_password_input = LineEdit()
+        self.mysql_root_password_input.setText("root")
+        mysql_grid_3.addWidget(self.mysql_root_password_input)
+        mysql_layout.addLayout(mysql_grid_3)
+
+        self._mysql_controls = [
+            self.mysql_port_spin,
+            self.mysql_database_input,
+            self.mysql_user_input,
+            self.mysql_password_input,
+            self.mysql_root_password_input,
+        ]
+        adv_c_layout.addWidget(mysql_card)
+
+        redis_card = CardWidget()
+        redis_layout = QVBoxLayout(redis_card)
+        redis_layout.setContentsMargins(12, 12, 12, 12)
+        redis_layout.setSpacing(8)
+        self.redis_enabled_cb = CheckBox("启用 Redis")
+        self.redis_enabled_cb.stateChanged.connect(self._on_redis_toggled)
+        redis_layout.addWidget(self.redis_enabled_cb)
+
+        redis_row = QHBoxLayout()
+        redis_row.addWidget(BodyLabel("端口"))
+        self.redis_port_spin = SpinBox()
+        self.redis_port_spin.setRange(1, 65535)
+        self.redis_port_spin.setValue(6379)
+        redis_row.addWidget(self.redis_port_spin)
+        redis_row.addStretch()
+        redis_layout.addLayout(redis_row)
+        self._redis_controls = [self.redis_port_spin]
+        adv_c_layout.addWidget(redis_card)
+
+        self._on_mysql_toggled()
+        self._on_redis_toggled()
+
         adv_outer.addWidget(self._adv_content)
         layout.addWidget(adv_card)
 
         # 折叠点击事件
-        self._adv_expanded = False
+        self._adv_expanded = True
         adv_header.mousePressEvent = lambda e: self._toggle_advanced()
         self._adv_toggle_btn.clicked.connect(self._toggle_advanced)
+        self._adv_toggle_btn.setIcon(FIF.CHEVRON_DOWN_MED)
 
         layout.addStretch()
         scroll.setWidget(inner_w)
@@ -702,6 +775,16 @@ class CreateProjectDialog(FluentDialog):
         """端口值改变时检查"""
         self.check_port()
 
+    def _on_mysql_toggled(self):
+        enabled = self.mysql_enabled_cb.isChecked()
+        for widget in self._mysql_controls:
+            widget.setEnabled(enabled)
+
+    def _on_redis_toggled(self):
+        enabled = self.redis_enabled_cb.isChecked()
+        for widget in self._redis_controls:
+            widget.setEnabled(enabled)
+
     def auto_assign_port(self):
         """自动分配可用端口"""
         # 获取当前项目名（用于排除自己）
@@ -771,6 +854,30 @@ class CreateProjectDialog(FluentDialog):
             )
             return
 
+        mysql_config = self._build_mysql_config(name)
+        if mysql_config:
+            process = get_port_usage(mysql_config["port"], name, include_configured_projects=False)
+            if process:
+                InfoBar.error(
+                    title="端口冲突",
+                    content=f"MySQL 端口 {mysql_config['port']} 被 {process} 占用",
+                    orient=Qt.Orientation.Horizontal,
+                    parent=self
+                )
+                return
+
+        redis_config = self._build_redis_config()
+        if redis_config:
+            process = get_port_usage(redis_config["port"], name, include_configured_projects=False)
+            if process:
+                InfoBar.error(
+                    title="端口冲突",
+                    content=f"Redis 端口 {redis_config['port']} 被 {process} 占用",
+                    orient=Qt.Orientation.Horizontal,
+                    parent=self
+                )
+                return
+
         php_version = self.php_combo.currentText()
         extensions = self.ext_selector.get_selected_extensions()
         proxy = self.proxy_input.text().strip()
@@ -796,10 +903,17 @@ class CreateProjectDialog(FluentDialog):
                 self.progress_dialog.append_log(f"扩展: {', '.join(extensions)}")
             if proxy:
                 self.progress_dialog.append_log(f"代理: {proxy}")
+            if mysql_config:
+                self.progress_dialog.append_log(f"MySQL: 端口 {mysql_config['port']} / 库 {mysql_config['database']}")
+            if redis_config:
+                self.progress_dialog.append_log(f"Redis: 端口 {redis_config['port']}")
             self.progress_dialog.append_log("")
             self.progress_dialog.append_log("正在创建项目文件...")
 
-            self.create_project_files(project_path, name, php_version, port, extensions, proxy, src_path, framework)
+            self.create_project_files(
+                project_path, name, php_version, port, extensions, proxy, src_path, framework,
+                mysql_config=mysql_config, redis_config=redis_config
+            )
             self.progress_dialog.append_log("✓ 项目文件创建完成")
             self.progress_dialog.append_log("")
 
@@ -814,7 +928,8 @@ class CreateProjectDialog(FluentDialog):
 
     def create_project_files(self, project_path: Path, project_name: str,
                              php_version: str, port: int, extensions: List[str], proxy: str,
-                             src_path: Path = None, framework: str = "通用"):
+                             src_path: Path = None, framework: str = "通用",
+                             mysql_config: dict | None = None, redis_config: dict | None = None):
         """创建项目文件"""
         code_dir_name = get_project_code_dir_name(project_name)
         code_dir = project_path / code_dir_name
@@ -828,7 +943,7 @@ class CreateProjectDialog(FluentDialog):
         (project_path / "Dockerfile").write_text(dockerfile)
 
         # 生成 docker-compose.yml
-        compose = self.generate_compose(project_name, port, proxy, code_dir_name)
+        compose = self.generate_compose(project_name, port, proxy, code_dir_name, mysql_config, redis_config)
         (project_path / "docker-compose.yml").write_text(compose)
 
         # 生成代码目录内容
@@ -1019,7 +1134,28 @@ class CreateProjectDialog(FluentDialog):
             lines.append(f"RUN install-php-extensions {' '.join(normal_exts)}")
         return lines
 
-    def generate_compose(self, project_name: str, port: int, proxy: str, code_dir_name: str) -> str:
+    def _build_mysql_config(self, project_name: str) -> dict | None:
+        if not self.mysql_enabled_cb.isChecked():
+            return None
+        return {
+            "port": self.mysql_port_spin.value(),
+            "database": self.mysql_database_input.text().strip() or project_name,
+            "user": self.mysql_user_input.text().strip() or "app",
+            "password": self.mysql_password_input.text().strip() or "app",
+            "root_password": self.mysql_root_password_input.text().strip() or "root",
+        }
+
+    def _build_redis_config(self) -> dict | None:
+        if not self.redis_enabled_cb.isChecked():
+            return None
+        return {
+            "port": self.redis_port_spin.value(),
+        }
+
+    def generate_compose(
+        self, project_name: str, port: int, proxy: str, code_dir_name: str,
+        mysql_config: dict | None = None, redis_config: dict | None = None
+    ) -> str:
         """生成 docker-compose.yml 内容"""
         uid = os.getuid()
         gid = os.getgid()
@@ -1038,6 +1174,53 @@ class CreateProjectDialog(FluentDialog):
             build_args += f"""
         HTTP_PROXY: {docker_proxy}
         HTTPS_PROXY: {docker_proxy}"""
+
+        extra_services = ""
+        if mysql_config:
+            extra_services += f"""
+
+  mysql:
+    container_name: {prefix}-mysql
+    image: mysql:8.0
+    restart: unless-stopped
+    ports:
+      - "{mysql_config['port']}:3306"
+    environment:
+      MYSQL_DATABASE: {mysql_config['database']}
+      MYSQL_USER: {mysql_config['user']}
+      MYSQL_PASSWORD: {mysql_config['password']}
+      MYSQL_ROOT_PASSWORD: {mysql_config['root_password']}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - app
+"""
+
+        if redis_config:
+            extra_services += f"""
+
+  redis:
+    container_name: {prefix}-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "{redis_config['port']}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app
+"""
+
+        volumes = ""
+        if mysql_config:
+            volumes += """
+volumes:
+  mysql_data:
+"""
+        if redis_config:
+            if not volumes:
+                volumes = "\nvolumes:\n"
+            volumes += "  redis_data:\n"
 
         content = f"""name: {prefix}
 
@@ -1081,9 +1264,10 @@ services:
       - php
     networks:
       - app
-
+{extra_services}
 networks:
   app:
+{volumes}
 """
         return content
 
@@ -1288,6 +1472,21 @@ networks:
             if not docker.wait_until_running("php", timeout=30):
                 self.progress_dialog.append_log("⚠ 容器启动超时，服务可能尚未就绪")
             self.progress_dialog.append_log(f"✓ 服务已启动: http://localhost:{self.port_spin.value()}")
+            mysql_config = self._build_mysql_config(self._creating_project_name or "")
+            if mysql_config:
+                self.progress_dialog.append_log("")
+                self.progress_dialog.append_log("MySQL 连接信息:")
+                self.progress_dialog.append_log("  Host: 127.0.0.1")
+                self.progress_dialog.append_log(f"  Port: {mysql_config['port']}")
+                self.progress_dialog.append_log(f"  Database: {mysql_config['database']}")
+                self.progress_dialog.append_log(f"  User: {mysql_config['user']}")
+                self.progress_dialog.append_log(f"  Password: {mysql_config['password']}")
+            redis_config = self._build_redis_config()
+            if redis_config:
+                self.progress_dialog.append_log("")
+                self.progress_dialog.append_log("Redis 连接信息:")
+                self.progress_dialog.append_log("  Host: 127.0.0.1")
+                self.progress_dialog.append_log(f"  Port: {redis_config['port']}")
             self.progress_dialog.set_finished(True)
             self._created_project_name = self._creating_project_name
             # 发送信号并关闭

@@ -1,13 +1,9 @@
 # phpbox
 
-PHP Docker 开发环境管理器。
+在 Linux 上做 PHP 开发，最麻烦的通常不是写代码，而是维护环境：
+不同项目要不同的 PHP 版本，不同扩展组合，日志、容器、端口、Xdebug 和构建过程又分散在一堆 Docker 命令里。
 
-phpbox 提供图形界面和命令行两套入口，用来管理本机的 PHP Docker 项目。它适合这样的工作流：
-
-- 一个项目对应一套独立的 PHP + Nginx 容器
-- 需要在不同项目之间切换 PHP 版本
-- 希望统一管理端口、扩展、日志、Xdebug 和常见开发命令
-- 平时既会用 GUI，也会在终端里频繁执行 `composer`、`artisan`、`think`、`php`
+`phpbox` 用 Docker 为每个项目提供独立运行环境，并通过 GUI 和 CLI 把项目管理、命令执行、日志查看、镜像构建和调试入口统一起来。
 
 ![Python](https://img.shields.io/badge/python-3.8+-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -85,6 +81,7 @@ dist/phpbox/phpbox
 - 创建新项目
 - 选择 PHP 版本
 - 选择并安装 PHP 扩展
+- 可选启用 MySQL / Redis
 - 修改项目配置
 - 管理 Xdebug
 - 查看项目状态、运行日志和访问地址
@@ -94,8 +91,31 @@ dist/phpbox/phpbox
 1. 点击“新建项目”
 2. 输入项目名称
 3. 选择 PHP 版本和端口
-4. 选择需要的扩展
-5. 创建并启动项目
+4. 按需选择 PHP 扩展
+5. 如有需要，启用 MySQL / Redis
+6. 创建并启动项目
+
+### 可选服务
+
+新建项目时可以额外启用：
+
+- MySQL
+- Redis
+
+默认连接方式如下：
+
+#### MySQL
+
+- Host: `127.0.0.1`
+- Port: 你在创建项目时设置的端口，默认 `3306`
+- Database: 默认使用项目名
+- User: 默认 `app`
+- Password: 默认 `app`
+
+#### Redis
+
+- Host: `127.0.0.1`
+- Port: 你在创建项目时设置的端口，默认 `6379`
 
 ## CLI
 
@@ -132,6 +152,8 @@ phpbox down [项目名]
 phpbox logs [项目名]
 phpbox logs [项目名] --service php
 phpbox logs [项目名] --service nginx
+phpbox logs [项目名] --service mysql
+phpbox logs [项目名] --service redis
 phpbox logs [项目名] --no-follow
 
 phpbox doctor
@@ -180,16 +202,21 @@ phpbox up
 phpbox shell
 phpbox shell php
 phpbox shell nginx
+phpbox shell mysql
+phpbox shell redis
 
 phpbox exec php -- php -v
 phpbox exec php -- ls -la
 phpbox exec nginx -- nginx -t
+phpbox exec mysql -- mysql --version
+phpbox exec redis -- redis-cli ping
 ```
 
 说明：
 
 - `phpbox shell` 默认进入 `php` 容器
 - `phpbox shell nginx` 可进入 `nginx` 容器
+- `phpbox shell mysql|redis` 可进入对应服务容器
 - `phpbox exec` 适合执行一次性命令
 
 ### PHP / Composer / 框架命令
