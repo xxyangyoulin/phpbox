@@ -75,6 +75,12 @@ uninstall() {
 create_appimage() {
     echo ">>> 创建 AppImage..."
 
+    if [ ! -x "$DIST_DIR/phpbox/phpbox" ]; then
+        echo "错误: 未找到目录式构建产物 $DIST_DIR/phpbox/phpbox"
+        echo "请先运行 ./build.sh --bin"
+        exit 1
+    fi
+
     # 检查 appimagetool
     if ! command -v appimagetool &> /dev/null; then
         echo "安装 appimagetool..."
@@ -93,7 +99,7 @@ create_appimage() {
     mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
     # 复制文件
-    cp "$DIST_DIR/phpbox" "$APPDIR/usr/bin/"
+    cp -r "$DIST_DIR/phpbox/." "$APPDIR/usr/bin/"
     cp "$SCRIPT_DIR/phpbox.desktop" "$APPDIR/usr/share/applications/"
     ln -sf "$APPDIR/usr/share/applications/phpbox.desktop" "$APPDIR/phpbox.desktop"
 

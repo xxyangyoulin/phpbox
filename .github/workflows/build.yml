@@ -56,6 +56,7 @@ jobs:
           rm -rf build/
           pyinstaller phpbox.spec --noconfirm
           echo "二进制大小: $(du -sh dist/phpbox | cut -f1)"
+          tar -C dist -czf dist/phpbox-linux-x86_64.tar.gz phpbox
 
       # ── 构建 AppImage ────────────────────────────────────────
       - name: 下载 appimagetool
@@ -73,7 +74,7 @@ jobs:
           mkdir -p "$APPDIR/usr/share/applications"
           mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
-          cp dist/phpbox "$APPDIR/usr/bin/"
+          cp -r dist/phpbox/. "$APPDIR/usr/bin/"
           cp phpbox.desktop "$APPDIR/usr/share/applications/"
           ln -sf usr/share/applications/phpbox.desktop "$APPDIR/phpbox.desktop"
 
@@ -107,6 +108,7 @@ jobs:
           DEB_DIR="deb_package"
           rm -rf "$DEB_DIR"
           mkdir -p "$DEB_DIR/DEBIAN"
+          mkdir -p "$DEB_DIR/opt/phpbox"
           mkdir -p "$DEB_DIR/usr/bin"
           mkdir -p "$DEB_DIR/usr/share/applications"
 
@@ -123,7 +125,12 @@ jobs:
            Supports multiple PHP versions (7.2-8.4) and 60+ extensions.
           EOF
 
-          cp dist/phpbox "$DEB_DIR/usr/bin/"
+          cp -r dist/phpbox/. "$DEB_DIR/opt/phpbox/"
+          cat > "$DEB_DIR/usr/bin/phpbox" << 'EOF'
+          #!/bin/bash
+          exec /opt/phpbox/phpbox "$@"
+          EOF
+          chmod +x "$DEB_DIR/usr/bin/phpbox"
           cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
           dpkg-deb --build "$DEB_DIR" "dist/phpbox_${VERSION}_amd64.deb"
           rm -rf "$DEB_DIR"
@@ -135,7 +142,7 @@ jobs:
         with:
           name: phpbox-linux-x86_64-${{ steps.version.outputs.version }}
           path: |
-            dist/phpbox
+            dist/phpbox-linux-x86_64.tar.gz
             dist/phpbox-x86_64.AppImage
             dist/phpbox_*_amd64.deb
           retention-days: 30
@@ -148,6 +155,6 @@ jobs:
           name: "phpbox v${{ steps.version.outputs.version }}"
           generate_release_notes: true   # 自动从 commit 生成 changelog
           files: |
-            dist/phpbox
+            dist/phpbox-linux-x86_64.tar.gz
             dist/phpbox-x86_64.AppImage
             dist/phpbox_*_amd64.deb
