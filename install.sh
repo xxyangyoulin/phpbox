@@ -5,6 +5,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
+INSTALL_DIR="/opt/phpbox"
 
 # 检测发行版
 detect_distro() {
@@ -25,8 +26,16 @@ detect_distro() {
 install_system() {
     echo ">>> 安装 PHP 开发环境管理器..."
 
-    # 复制可执行文件
-    sudo cp "$DIST_DIR/phpbox" /usr/local/bin/
+    # 安装程序目录
+    sudo rm -rf "$INSTALL_DIR"
+    sudo mkdir -p "$INSTALL_DIR"
+    sudo cp -r "$DIST_DIR/phpbox/." "$INSTALL_DIR/"
+
+    # 创建启动脚本
+    sudo tee /usr/local/bin/phpbox >/dev/null << EOF
+#!/bin/bash
+exec "$INSTALL_DIR/phpbox" "\$@"
+EOF
     sudo chmod +x /usr/local/bin/phpbox
 
     # 复制 desktop 文件
@@ -54,6 +63,7 @@ install_system() {
 uninstall() {
     echo ">>> 卸载 PHP 开发环境管理器..."
     sudo rm -f /usr/local/bin/phpbox
+    sudo rm -rf "$INSTALL_DIR"
     sudo rm -f /usr/share/applications/phpbox.desktop
     sudo rm -f /usr/share/icons/hicolor/*/apps/phpbox.png
     sudo gtk-update-icon-cache -f /usr/share/icons/hicolor/ 2>/dev/null || true

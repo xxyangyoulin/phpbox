@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """PHP 开发环境管理器 - 程序入口"""
+import os
 import sys
 import subprocess
 import argparse
@@ -8,6 +9,15 @@ from pathlib import Path
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+
+if (
+    not os.environ.get("QT_QPA_PLATFORM")
+    and (
+        os.environ.get("WAYLAND_DISPLAY")
+        or os.environ.get("XDG_SESSION_TYPE") == "wayland"
+    )
+):
+    os.environ["QT_QPA_PLATFORM"] = "wayland;xcb"
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QSettings, qInstallMessageHandler, QtMsgType

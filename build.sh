@@ -44,8 +44,8 @@ build_bin() {
     # 使用 PyInstaller 打包
     pyinstaller phpbox.spec --noconfirm
 
-    if [ -f "dist/phpbox" ]; then
-        echo ">>> 二进制构建完成: dist/phpbox"
+    if [ -x "dist/phpbox/phpbox" ]; then
+        echo ">>> 二进制构建完成: dist/phpbox/phpbox"
     else
         echo "错误: 打包失败"
         exit 1
@@ -56,7 +56,7 @@ build_bin() {
 build_appimage() {
     echo ">>> 构建 AppImage..."
 
-    if [ ! -f "dist/phpbox" ]; then
+    if [ ! -x "dist/phpbox/phpbox" ]; then
         build_bin
     fi
 
@@ -81,7 +81,7 @@ build_appimage() {
     mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
     # 复制文件
-    cp dist/phpbox "$APPDIR/usr/bin/"
+    cp dist/phpbox/phpbox "$APPDIR/usr/bin/"
     cp phpbox.desktop "$APPDIR/usr/share/applications/"
     ln -sf usr/share/applications/phpbox.desktop "$APPDIR/phpbox.desktop"
 
@@ -118,7 +118,7 @@ EOF
 build_deb() {
     echo ">>> 构建 .deb 包..."
 
-    if [ ! -f "dist/phpbox" ]; then
+    if [ ! -x "dist/phpbox/phpbox" ]; then
         build_bin
     fi
 
@@ -146,7 +146,7 @@ Description: PHP Development Environment Manager
 EOF
 
     # 复制文件
-    cp dist/phpbox "$DEB_DIR/usr/bin/"
+    cp dist/phpbox/phpbox "$DEB_DIR/usr/bin/"
     cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
 
     # 构建

@@ -3,19 +3,31 @@
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
 block_cipher = None
 
 # 项目根目录
 project_root = Path(SPECPATH)
 
+pyqt6_datas = []
+for subdir in (
+    "Qt6/plugins/platforms",
+    "Qt6/plugins/wayland-decoration-client",
+    "Qt6/plugins/wayland-graphics-integration-client",
+):
+    pyqt6_datas.extend(collect_data_files("PyQt6", subdir=subdir))
+
+pyqt6_binaries = collect_dynamic_libs("PyQt6")
+
 a = Analysis(
     ['main.py'],
     pathex=[str(project_root)],
-    binaries=[],
+    binaries=pyqt6_binaries,
     datas=[
         # 资源文件
         ('resources', 'resources'),
+        *pyqt6_datas,
     ],
     hiddenimports=[
         'PyQt6.QtCore',
@@ -30,7 +42,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['pyinstaller_rth_qt.py'],
     excludes=[
         'tkinter',
         'matplotlib',
@@ -50,10 +62,8 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='phpbox',
     debug=False,
     bootloader_ignore_signals=False,
@@ -68,6 +78,17 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,  # 可以设置图标: 'resources/icons/app.ico'
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='phpbox',
 )
 
 # Linux desktop 文件安装 (可选)
