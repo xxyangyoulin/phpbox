@@ -1,6 +1,13 @@
 # phpbox
 
-PHP Docker 开发环境管理器 —— 图形化管理 PHP 容器环境
+PHP Docker 开发环境管理器。
+
+phpbox 提供图形界面和命令行两套入口，用来管理本机的 PHP Docker 项目。它适合这样的工作流：
+
+- 一个项目对应一套独立的 PHP + Nginx 容器
+- 需要在不同项目之间切换 PHP 版本
+- 希望统一管理端口、扩展、日志、Xdebug 和常见开发命令
+- 平时既会用 GUI，也会在终端里频繁执行 `composer`、`artisan`、`think`、`php`
 
 ![Python](https://img.shields.io/badge/python-3.8+-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -9,91 +16,328 @@ PHP Docker 开发环境管理器 —— 图形化管理 PHP 容器环境
 
 ## 特性
 
-- PHP **7.2 - 8.4** 多版本支持
-- **60+** PHP 扩展，按分类选择
-- Docker 容器启停、日志查看、命令执行
-- Xdebug 一键配置
-- 现代化 UI，浅色/深色主题
-- 系统托盘常驻
+- 支持 PHP `7.2` 到 `8.4`
+- 支持 `60+` PHP 扩展
+- 图形化创建、管理、启动、停止项目
+- 内置 Xdebug 配置能力
+- 支持查看日志、进入容器、执行命令
+- 支持 Wayland 与 X11 环境
+- 提供面向日常开发的 CLI
 
-## 安装
+## 环境要求
+
+- Linux
+- Docker
+- `docker compose` 或 `docker-compose`
+- Python `3.8+`
+
+如果你主要使用 CLI，也建议先确保：
 
 ```bash
-# 克隆仓库
-git clone https://github.com/yourusername/phpbox.git
+docker info
+docker compose version
+```
+
+## 安装与运行
+
+### 从源码运行
+
+```bash
+git clone https://github.com/xxyangyoulin/phpbox.git
 cd phpbox
 
-# 安装依赖
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 运行
 python main.py
 ```
 
-## 使用
+### 构建可执行文件
 
-1. 点击 **新建项目**，输入项目名称
-2. 选择 PHP 版本和端口
-3. 勾选需要的 PHP 扩展
-4. 点击创建，自动生成 Docker 配置并启动容器
+```bash
+./build.sh --bin
+```
 
-## 命令行
+构建完成后，主程序位于：
 
-phpbox 同时提供常用 CLI，适合在终端里快速管理项目。
+```bash
+dist/phpbox/phpbox
+```
 
-### 常用命令
+### 安装到系统
+
+如果你已经构建好目录式产物，可以执行：
+
+```bash
+./install.sh install
+```
+
+安装后：
+
+- 程序主体位于 `/opt/phpbox`
+- 启动命令为 `phpbox`
+
+## GUI 功能
+
+图形界面适合这些操作：
+
+- 创建新项目
+- 选择 PHP 版本
+- 选择并安装 PHP 扩展
+- 修改项目配置
+- 管理 Xdebug
+- 查看项目状态、运行日志和访问地址
+
+典型流程：
+
+1. 点击“新建项目”
+2. 输入项目名称
+3. 选择 PHP 版本和端口
+4. 选择需要的扩展
+5. 创建并启动项目
+
+## CLI
+
+phpbox 的 CLI 适合高频终端操作。它有两个核心设计：
+
+- 在任意目录下，可以通过项目名管理项目
+- 在项目目录或其子目录下，可以省略项目名，自动作用于当前项目
+
+### 项目管理命令
 
 ```bash
 phpbox list
 phpbox ps
-phpbox status test
-phpbox up test
-phpbox stop test
-phpbox down test
-phpbox restart test
-phpbox logs test
-phpbox build test
-phpbox rebuild test --no-cache
+phpbox status [项目名]
+
+phpbox start [项目名]
+phpbox stop [项目名]
+phpbox restart [项目名]
+
+phpbox up [项目名]
+phpbox down [项目名]
+```
+
+说明：
+
+- `phpbox ps` 是 `status` 的快捷写法
+- `phpbox up` 是 `start` 的快捷写法
+- `phpbox stop` 只停止容器
+- `phpbox down` 会执行 `docker compose down`，停止并移除项目容器
+
+### 日志与诊断
+
+```bash
+phpbox logs [项目名]
+phpbox logs [项目名] --service php
+phpbox logs [项目名] --service nginx
+phpbox logs [项目名] --no-follow
+
 phpbox doctor
 ```
 
+说明：
+
+- `phpbox logs` 默认持续追踪日志
+- 如果只想看当前日志，不持续输出，使用 `--no-follow`
+- `doctor` 会检查 Docker、Compose、终端环境和日志目录等基础条件
+
+### 构建镜像
+
+```bash
+phpbox build [项目名]
+phpbox build [项目名] --no-cache
+
+phpbox rebuild [项目名]
+phpbox rebuild [项目名] --no-cache
+```
+
+说明：
+
+- `build` 会执行当前项目的 `docker compose build`
+- `rebuild` 当前也执行构建，但通常语义上表示“重新构建”
+- `--no-cache` 会强制忽略 Docker 层缓存
+- 构建时会实时输出日志
+- 构建成功后不会自动重启容器
+
+如果你希望新镜像生效，通常还需要执行：
+
+```bash
+phpbox restart
+```
+
+或者：
+
+```bash
+phpbox down
+phpbox up
+```
+
+### 进入容器与执行命令
+
+```bash
+phpbox shell
+phpbox shell php
+phpbox shell nginx
+
+phpbox exec php -- php -v
+phpbox exec php -- ls -la
+phpbox exec nginx -- nginx -t
+```
+
+说明：
+
+- `phpbox shell` 默认进入 `php` 容器
+- `phpbox shell nginx` 可进入 `nginx` 容器
+- `phpbox exec` 适合执行一次性命令
+
+### PHP / Composer / 框架命令
+
+```bash
+phpbox php -v
+phpbox php -m
+
+phpbox composer install
+phpbox composer update
+
+phpbox artisan migrate
+phpbox artisan route:list
+
+phpbox think queue:listen
+phpbox think route:list
+```
+
+说明：
+
+- 这些命令都要求你当前位于项目目录或其子目录中
+- 对 `php` 容器命令，phpbox 会尽量把当前代码子目录映射到容器中的对应工作目录
+
 ### 在项目目录中直接执行
 
-如果当前目录位于某个项目目录或其子目录中，以下命令会自动选中当前项目：
+如果当前目录属于某个项目，以下命令会自动选中当前项目：
 
 ```bash
 phpbox ps
+phpbox status
 phpbox up
 phpbox stop
 phpbox down
 phpbox restart
 phpbox logs
 phpbox logs --no-follow
+phpbox build
+phpbox rebuild --no-cache
 phpbox shell
 phpbox shell nginx
 phpbox php -v
 phpbox composer install
 phpbox artisan migrate
 phpbox think queue:listen
-phpbox build
-phpbox rebuild --no-cache
+phpbox exec php -- php -m
 ```
 
-这意味着你不需要再额外输入项目名称，直接在项目目录里执行即可。
+这也是 phpbox CLI 最推荐的使用方式。
 
-- `phpbox up` 等价于启动项目
-- `phpbox stop` 仅停止容器
-- `phpbox down` 会执行 `docker compose down`，停止并移除项目容器
-- `phpbox logs` 默认持续追踪日志，若只查看当前日志可加 `--no-follow`
+## 常见工作流
 
-## 构建
+### 查看所有项目
 
 ```bash
-./build.sh --bin        # 二进制
-./build.sh --appimage   # AppImage
-./build.sh --deb        # deb 包
+phpbox list
+```
+
+### 启动一个指定项目
+
+```bash
+phpbox up myproject
+```
+
+### 在项目目录中执行 Composer
+
+```bash
+cd ~/php-dev/projects/myproject/myproject
+phpbox composer install
+```
+
+### 在项目目录中执行 Laravel Artisan
+
+```bash
+cd ~/php-dev/projects/myproject/myproject
+phpbox artisan migrate
+```
+
+### 在项目目录中执行 ThinkPHP 命令
+
+```bash
+cd ~/php-dev/projects/myproject/myproject
+phpbox think queue:listen
+```
+
+### 重新构建镜像并重启
+
+```bash
+phpbox rebuild --no-cache
+phpbox restart
+```
+
+### 查看 PHP 服务日志
+
+```bash
+phpbox logs --service php
+```
+
+## 构建与发布
+
+### 本地构建
+
+```bash
+./build.sh --bin
+./build.sh --appimage
+./build.sh --deb
+```
+
+说明：
+
+- `--bin` 生成目录式可执行产物
+- `--appimage` 构建 AppImage
+- `--deb` 构建 `.deb` 包，需要系统中存在 `dpkg-deb`
+
+在 Arch Linux 上，`dpkg-deb` 来自：
+
+```bash
+sudo pacman -S dpkg
+```
+
+### GitHub Actions
+
+项目已配置 GitHub Actions 构建流程。推送版本 tag 后会自动构建并发布：
+
+```bash
+git tag v1.0.14
+git push origin v1.0.14
+```
+
+## Wayland 与 tmux
+
+项目已支持 Wayland。若在 Hyprland 等环境下出现“明明在 Wayland 中却像走了 XWayland”的情况，先检查当前 shell 环境：
+
+```bash
+echo "$XDG_SESSION_TYPE"
+echo "$WAYLAND_DISPLAY"
+```
+
+如果你通过旧的 `tmux` session 进入图形环境，可能会继承到 `tty` 环境变量。此时建议：
+
+```bash
+tmux kill-server
+tmux
+```
+
+并在 `~/.tmux.conf` 中加入：
+
+```tmux
+set -g update-environment "DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS"
 ```
 
 ## 技术栈

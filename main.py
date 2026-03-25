@@ -84,6 +84,10 @@ def _build_parser():
     shell_parser = subparsers.add_parser("shell", help="进入当前项目容器")
     shell_parser.add_argument("service", nargs="?", choices=["php", "nginx"], default="php", help="容器服务名")
 
+    exec_parser = subparsers.add_parser("exec", help="在当前项目容器中执行命令")
+    exec_parser.add_argument("service", choices=["php", "nginx"], help="容器服务名")
+    exec_parser.add_argument("args", nargs=argparse.REMAINDER, help="要执行的命令，使用 -- 与 phpbox 参数分隔")
+
     php_parser = subparsers.add_parser("php", help="在当前项目中执行 php 命令")
     php_parser.add_argument("args", nargs=argparse.REMAINDER, help="传给 php 的参数")
 
@@ -196,6 +200,34 @@ def _run_project_shell(project, service: str) -> int:
         compose_cmd + ["exec", service, "sh", "-lc", shell_command],
         cwd=str(project.path)
     )
+    return result.returncode
+
+
+def _run_project_exec(project, service: str, command_args) -> int:
+    if not command_args:
+        print("请提供要执行的命令，例如 `phpbox exec php -- php -v`。", file=sys.stderr)
+        return 1
+
+    docker = DockerManager(project.path)
+    compose_cmd = docker.get_compose_command()
+    if not compose_cmd:
+        print("未检测到 docker compose 或 docker-compose", file=sys.stderr)
+        return 1
+
+    args = list(command_args)
+    if args and args[0] == "--":
+        args = args[1:]
+    if not args:
+        print("请提供要执行的命令，例如 `phpbox exec php -- php -v`。", file=sys.stderr)
+        return 1
+
+    exec_args = compose_cmd + ["exec"]
+    if service == "php":
+        exec_args.extend(["-w", _resolve_container_workdir(project, Path.cwd())])
+    exec_args.append(service)
+    exec_args.extend(args)
+
+    result = subprocess.run(exec_args, cwd=str(project.path))
     return result.returncode
 
 
@@ -343,13 +375,15 @@ def _run_cli(args) -> int:
             print(str(e), file=sys.stderr)
             return 1
 
-    if args.command in {"shell", "php", "composer", "artisan", "think"}:
+    if args.command in {"shell", "exec", "php", "composer", "artisan", "think"}:
         project = _find_project_by_cwd(manager, Path.cwd())
         if not project:
             _print_project_context_required()
             return 1
         if args.command == "shell":
             return _run_project_shell(project, args.service)
+        if args.command == "exec":
+            return _run_project_exec(project, args.service, args.args)
         if args.command == "artisan":
             return _run_project_command(project, "php", ["artisan", *args.args])
         if args.command == "think":
@@ -382,7 +416,7 @@ def main():
     parser = _build_parser()
     args, unknown_args = parser.parse_known_args()
 
-    if args.command in {"php", "composer", "artisan", "think"}:
+    if args.command in {"exec", "php", "composer", "artisan", "think"}:
         args.args = list(getattr(args, "args", [])) + unknown_args
     elif unknown_args:
         parser.error(f"unrecognized arguments: {' '.join(unknown_args)}")
