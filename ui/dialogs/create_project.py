@@ -946,6 +946,9 @@ class CreateProjectDialog(FluentDialog):
         compose = self.generate_compose(project_name, port, proxy, code_dir_name, mysql_config, redis_config)
         (project_path / "docker-compose.yml").write_text(compose)
 
+        env_phpbox = self.generate_env_phpbox(port, mysql_config, redis_config)
+        (project_path / ".env.phpbox").write_text(env_phpbox)
+
         # 生成代码目录内容
         if src_path:
             # 导入项目：复制源代码
@@ -990,6 +993,39 @@ class CreateProjectDialog(FluentDialog):
         # 生成 nginx 配置
         nginx_conf = self.generate_nginx_config(framework)
         (project_path / "nginx" / "default.conf").write_text(nginx_conf)
+
+    def generate_env_phpbox(
+        self,
+        port: int,
+        mysql_config: dict | None = None,
+        redis_config: dict | None = None,
+    ) -> str:
+        """生成 .env.phpbox 内容"""
+        lines = [
+            f"APP_URL=http://localhost:{port}",
+        ]
+
+        if mysql_config:
+            lines.extend([
+                "DB_CONNECTION=mysql",
+                "DB_HOST=mysql",
+                "DB_PORT=3306",
+                f"DB_DATABASE={mysql_config['database']}",
+                f"DB_USERNAME={mysql_config['user']}",
+                f"DB_PASSWORD={mysql_config['password']}",
+                "PHPBOX_DB_HOST=127.0.0.1",
+                f"PHPBOX_DB_PORT={mysql_config['port']}",
+            ])
+
+        if redis_config:
+            lines.extend([
+                "REDIS_HOST=redis",
+                "REDIS_PORT=6379",
+                "PHPBOX_REDIS_HOST=127.0.0.1",
+                f"PHPBOX_REDIS_PORT={redis_config['port']}",
+            ])
+
+        return "\n".join(lines) + "\n"
 
     def generate_dockerfile(self, project_name: str, php_version: str,
                             extensions: List[str], proxy: str) -> str:
