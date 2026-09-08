@@ -31,7 +31,7 @@ class BuildProgressDialog(FluentDialog):
         self.setMinimumSize(650, 500)
         self.resize(700, 550)
         # 设置为窗口模态，避免被窗口管理器识别为独立窗口
-        self.setWindowModality(Qt.WindowModality.WindowModal)
+        self.setWindowModality(Qt.WindowModality.NonModal)
 
         self._current_stage = 0
         self._log_count = 0
@@ -113,6 +113,9 @@ class BuildProgressDialog(FluentDialog):
 
         # 按钮区域
         btn_layout = QHBoxLayout()
+        background_btn = PushButton("转到后台")
+        background_btn.clicked.connect(self.hide)
+        btn_layout.addWidget(background_btn)
         btn_layout.addStretch()
         self.cancel_btn = PushButton(FIF.CANCEL, "取消构建")
         self.cancel_btn.clicked.connect(self._on_cancel)
@@ -309,3 +312,7 @@ class BuildProgressDialog(FluentDialog):
     @property
     def cancelled(self) -> bool:
         return self._cancelled
+
+    def closeEvent(self, event):
+        self.hide()
+        event.ignore()

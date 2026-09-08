@@ -1,3 +1,8 @@
-PyQt6>=6.5.0
-PyQt6-Fluent-Widgets>=1.4.0
-pyinstaller>=6.0.0
+PyQt6==6.7.1; python_version < "3.10"
+PyQt6-Qt6==6.7.3; python_version < "3.10"
+PyQt6-sip==13.8.0; python_version < "3.10"
+PyQt6==6.10.2; python_version >= "3.10"
+PyQt6-Qt6==6.10.2; python_version >= "3.10"
+PyQt6-sip==13.11.1; python_version >= "3.10"
+PyQt6-Fluent-Widgets==1.11.1
+pyinstaller==6.19.0

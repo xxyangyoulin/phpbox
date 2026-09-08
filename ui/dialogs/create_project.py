@@ -1,5 +1,7 @@
 """创建项目对话框"""
 import os
+import threading
+import json
 import shutil
 from typing import Dict, List, Optional
 from PyQt6.QtWidgets import (
@@ -25,6 +27,8 @@ from core.project import (
     get_project_code_dir_name,
 )
 from core.proxy import detect_system_proxy, convert_proxy_for_docker, build_dockerfile_proxy_snippet
+from core.process import run_process
+from ui.worker import register_worker
 from core.docker import DockerManager
 from core.settings import Settings
 from ui.widgets.extension_selector import ExtensionSelector
@@ -221,72 +225,43 @@ class BuildWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str, list)  # success, message, logs
 
-    def __init__(self, project_path: Path, proxy: str = None):
+    def __init__(self, project_path: Path, proxy: str = None, prepare=None, finalize=None):
         super().__init__()
         self.project_path = project_path
+        self.prepare = prepare
+        self.finalize = finalize
         self.proxy = proxy
         self.logs = []
-        self._running = True
-        self.process = None
+        self.cancel_event = threading.Event()
+        register_worker(self, f"{project_path.name} · 创建项目")
 
     def run(self):
-        import subprocess
-        self.logs = []
         try:
+            if self.prepare:
+                self.progress.emit("正在准备项目文件...")
+                self.prepare(self.cancel_event)
+            if self.cancel_event.is_set():
+                raise InterruptedError("创建已取消，已生成文件保留在项目目录")
             env = os.environ.copy()
-            if self.proxy:
-                env["HTTP_PROXY"] = self.proxy
-                env["HTTPS_PROXY"] = self.proxy
-                self.logs.append(f"使用代理: {self.proxy}")
-                self.logs.append("")
-
-            docker = DockerManager(self.project_path)
-            cmd = docker.get_compose_command() + ["build"]
-            if not docker.get_compose_command():
-                self.finished.emit(False, "未检测到 docker compose 或 docker-compose", self.logs)
-                return
-            self.process = subprocess.Popen(
-                cmd,
-                cwd=str(self.project_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env
-            )
-
-            for line in self.process.stdout:
-                if not self._running:
-                    break
-                stripped = line.rstrip()
-                self.logs.append(stripped)
-                self.progress.emit(stripped)
-
-            self.process.wait()
-            
-            if not self._running:
-                self.finished.emit(False, "构建已取消", self.logs)
-                return
-
-            if self.process.returncode == 0:
-                self.finished.emit(True, "构建完成", self.logs)
-            else:
-                self.finished.emit(False, "构建失败", self.logs)
-        except Exception as e:
-            if self._running:
-                self.logs.append(f"错误: {str(e)}")
-                self.finished.emit(False, str(e), self.logs)
+            proxy = convert_proxy_for_docker(self.proxy) if self.proxy else None
+            if proxy:
+                env.update({key: proxy for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")})
+            command = DockerManager(self.project_path).get_compose_command()
+            if not command:
+                raise RuntimeError("未检测到 Docker Compose")
+            result = run_process(command + ["build"], cwd=str(self.project_path), env=env,
+                                 cancel=self.cancel_event, on_output=self.progress.emit, timeout=3600)
+            if result.returncode:
+                raise RuntimeError(result.stdout[-2000:])
+            if self.finalize:
+                self.progress.emit("正在复制配置并启动服务...")
+                self.finalize(self.cancel_event)
+            self.finished.emit(True, "创建完成", [])
+        except Exception as exc:
+            self.finished.emit(False, str(exc), [])
 
     def stop(self):
-        """停止构建进程"""
-        self._running = False
-        if self.process:
-            self.process.terminate()
-            try:
-                import subprocess
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+        self.cancel_event.set()
 
 
 class CreateProjectDialog(FluentDialog):
@@ -843,42 +818,9 @@ class CreateProjectDialog(FluentDialog):
             )
             return
 
-        # 检查端口
         port = self.port_spin.value()
-        process = get_port_usage(port, name)
-        if process:
-            InfoBar.error(
-                title="端口冲突",
-                content=f"端口 {port} 被 {process} 占用",
-                orient=Qt.Orientation.Horizontal,
-                parent=self
-            )
-            return
-
         mysql_config = self._build_mysql_config(name)
-        if mysql_config:
-            process = get_port_usage(mysql_config["port"], name, include_configured_projects=False)
-            if process:
-                InfoBar.error(
-                    title="端口冲突",
-                    content=f"MySQL 端口 {mysql_config['port']} 被 {process} 占用",
-                    orient=Qt.Orientation.Horizontal,
-                    parent=self
-                )
-                return
-
         redis_config = self._build_redis_config()
-        if redis_config:
-            process = get_port_usage(redis_config["port"], name, include_configured_projects=False)
-            if process:
-                InfoBar.error(
-                    title="端口冲突",
-                    content=f"Redis 端口 {redis_config['port']} 被 {process} 占用",
-                    orient=Qt.Orientation.Horizontal,
-                    parent=self
-                )
-                return
-
         php_version = self.php_combo.currentText()
         extensions = self.ext_selector.get_selected_extensions()
         proxy = self.proxy_input.text().strip()
@@ -894,43 +836,43 @@ class CreateProjectDialog(FluentDialog):
         QApplication.processEvents()
         self.hide()  # 隐藏创建对话框
 
-        # 创建项目目录
         project_path = BASE_DIR / name
-        try:
-            self.progress_dialog.append_log(f"项目名称: {name}")
-            self.progress_dialog.append_log(f"PHP 版本: {php_version}")
-            self.progress_dialog.append_log(f"端口: {port}")
-            if extensions:
-                self.progress_dialog.append_log(f"扩展: {', '.join(extensions)}")
-            if proxy:
-                self.progress_dialog.append_log(f"代理: {proxy}")
-            if mysql_config:
-                self.progress_dialog.append_log(f"MySQL: 端口 {mysql_config['port']} / 库 {mysql_config['database']}")
-            if redis_config:
-                self.progress_dialog.append_log(f"Redis: 端口 {redis_config['port']}")
-            self.progress_dialog.append_log("")
-            self.progress_dialog.append_log("正在创建项目文件...")
-
-            self.create_project_files(
-                project_path, name, php_version, port, extensions, proxy, src_path, framework,
-                mysql_config=mysql_config, redis_config=redis_config
-            )
-            self.progress_dialog.append_log("✓ 项目文件创建完成")
-            self.progress_dialog.append_log("")
-
-            # 构建镜像
-            self.build_and_start(project_path, proxy)
-        except Exception as e:
-            self.progress_dialog.append_log(f"❌ 错误: {str(e)}")
-            self.progress_dialog.append_log("正在清理...")
-            self._cleanup_failed_project(project_path)
-            self.progress_dialog.set_finished(False, str(e))
-            self.progress_dialog.accepted.connect(self.reject)
+        def prepare(cancel):
+            ports = [port] + ([mysql_config["port"]] if mysql_config else []) + ([redis_config["port"]] if redis_config else [])
+            if len(ports) != len(set(ports)):
+                raise ValueError("HTTP、MySQL 和 Redis 端口不能相同")
+            for selected_port in ports:
+                usage = get_port_usage(selected_port, name)
+                if usage:
+                    raise ValueError(f"端口 {selected_port} 已被 {usage} 占用")
+            if src_path:
+                source = src_path.resolve()
+                target = project_path.resolve()
+                if not source.is_dir() or source == target or source in target.parents:
+                    raise ValueError("导入源必须是目录，且不能包含新项目目标目录")
+            if project_path.exists():
+                raise ValueError("项目目录已存在")
+            self.create_project_files(project_path, name, php_version, port, extensions, proxy, src_path,
+                                      framework, mysql_config, redis_config, cancel)
+        def finalize(cancel):
+            if cancel.is_set():
+                raise InterruptedError("创建已取消")
+            self.copy_configs(project_path)
+            if cancel.is_set():
+                raise InterruptedError("创建已取消")
+            result = DockerManager(project_path, cancel=cancel).up()
+            if not result.success:
+                raise RuntimeError(result.error)
+        self.build_worker = BuildWorker(project_path, proxy, prepare, finalize)
+        self.build_worker.progress.connect(self._on_build_progress)
+        self.build_worker.finished.connect(self._on_build_finished)
+        self.progress_dialog.rejected.connect(self._on_progress_dialog_rejected)
+        self.build_worker.start()
 
     def create_project_files(self, project_path: Path, project_name: str,
                              php_version: str, port: int, extensions: List[str], proxy: str,
                              src_path: Path = None, framework: str = "通用",
-                             mysql_config: dict | None = None, redis_config: dict | None = None):
+                             mysql_config: Optional[dict] = None, redis_config: Optional[dict] = None, cancel=None):
         """创建项目文件"""
         code_dir_name = get_project_code_dir_name(project_name)
         code_dir = project_path / code_dir_name
@@ -953,11 +895,17 @@ class CreateProjectDialog(FluentDialog):
         # 生成代码目录内容
         if src_path:
             # 导入项目：复制源代码
+            def copy_file(source, target):
+                if cancel is not None and cancel.is_set():
+                    raise InterruptedError("导入已取消")
+                return shutil.copy2(source, target)
             for item in src_path.iterdir():
+                if cancel is not None and cancel.is_set():
+                    raise InterruptedError("导入已取消")
                 if item.is_dir():
-                    shutil.copytree(item, code_dir / item.name, dirs_exist_ok=True)
+                    shutil.copytree(item, code_dir / item.name, dirs_exist_ok=True, copy_function=copy_file)
                 else:
-                    shutil.copy2(item, code_dir / item.name)
+                    copy_file(item, code_dir / item.name)
         else:
             # 新建项目：生成 index.php
             index_dir = code_dir / "public" if framework in {"Laravel", "ThinkPHP"} else code_dir
@@ -1000,8 +948,8 @@ class CreateProjectDialog(FluentDialog):
     def generate_env_phpbox(
         self,
         port: int,
-        mysql_config: dict | None = None,
-        redis_config: dict | None = None,
+        mysql_config: Optional[dict] = None,
+        redis_config: Optional[dict] = None,
     ) -> str:
         """生成 .env.phpbox 内容"""
         lines = [
@@ -1013,9 +961,9 @@ class CreateProjectDialog(FluentDialog):
                 "DB_CONNECTION=mysql",
                 "DB_HOST=mysql",
                 "DB_PORT=3306",
-                f"DB_DATABASE={mysql_config['database']}",
-                f"DB_USERNAME={mysql_config['user']}",
-                f"DB_PASSWORD={mysql_config['password']}",
+                f"DB_DATABASE={json.dumps(mysql_config['database'], ensure_ascii=False)}",
+                f"DB_USERNAME={json.dumps(mysql_config['user'], ensure_ascii=False)}",
+                f"DB_PASSWORD={json.dumps(mysql_config['password'], ensure_ascii=False)}",
                 "PHPBOX_DB_HOST=127.0.0.1",
                 f"PHPBOX_DB_PORT={mysql_config['port']}",
             ])
@@ -1050,10 +998,10 @@ class CreateProjectDialog(FluentDialog):
                 "# 构建时代理（仅 build 阶段生效）",
                 "ARG HTTP_PROXY",
                 "ARG HTTPS_PROXY",
-                f'ENV http_proxy="{docker_proxy}"',
-                f'ENV https_proxy="{docker_proxy}"',
-                f'ENV HTTP_PROXY="{docker_proxy}"',
-                f'ENV HTTPS_PROXY="{docker_proxy}"',
+                'ENV http_proxy=${HTTP_PROXY}',
+                'ENV https_proxy=${HTTPS_PROXY}',
+                'ENV HTTP_PROXY=${HTTP_PROXY}',
+                'ENV HTTPS_PROXY=${HTTPS_PROXY}',
                 "",
             ])
 
@@ -1178,7 +1126,7 @@ class CreateProjectDialog(FluentDialog):
             lines.append(f"RUN install-php-extensions {' '.join(normal_exts)}")
         return lines
 
-    def _build_mysql_config(self, project_name: str) -> dict | None:
+    def _build_mysql_config(self, project_name: str) -> Optional[dict]:
         if not self.mysql_enabled_cb.isChecked():
             return None
         return {
@@ -1189,7 +1137,7 @@ class CreateProjectDialog(FluentDialog):
             "root_password": self.mysql_root_password_input.text().strip() or "root",
         }
 
-    def _build_redis_config(self) -> dict | None:
+    def _build_redis_config(self) -> Optional[dict]:
         if not self.redis_enabled_cb.isChecked():
             return None
         return {
@@ -1198,7 +1146,7 @@ class CreateProjectDialog(FluentDialog):
 
     def generate_compose(
         self, project_name: str, port: int, proxy: str, code_dir_name: str,
-        mysql_config: dict | None = None, redis_config: dict | None = None
+        mysql_config: Optional[dict] = None, redis_config: Optional[dict] = None
     ) -> str:
         """生成 docker-compose.yml 内容"""
         uid = os.getuid()
@@ -1216,8 +1164,8 @@ class CreateProjectDialog(FluentDialog):
 
         if docker_proxy:
             build_args += f"""
-        HTTP_PROXY: {docker_proxy}
-        HTTPS_PROXY: {docker_proxy}"""
+        HTTP_PROXY: {json.dumps(docker_proxy.replace('$', '$$'))}
+        HTTPS_PROXY: {json.dumps(docker_proxy.replace('$', '$$'))}"""
 
         extra_services = ""
         if mysql_config:
@@ -1230,10 +1178,10 @@ class CreateProjectDialog(FluentDialog):
     ports:
       - "{mysql_config['port']}:3306"
     environment:
-      MYSQL_DATABASE: {mysql_config['database']}
-      MYSQL_USER: {mysql_config['user']}
-      MYSQL_PASSWORD: {mysql_config['password']}
-      MYSQL_ROOT_PASSWORD: {mysql_config['root_password']}
+      MYSQL_DATABASE: {json.dumps(mysql_config['database'].replace('$', '$$'), ensure_ascii=False)}
+      MYSQL_USER: {json.dumps(mysql_config['user'].replace('$', '$$'), ensure_ascii=False)}
+      MYSQL_PASSWORD: {json.dumps(mysql_config['password'].replace('$', '$$'), ensure_ascii=False)}
+      MYSQL_ROOT_PASSWORD: {json.dumps(mysql_config['root_password'].replace('$', '$$'), ensure_ascii=False)}
     volumes:
       - mysql_data:/var/lib/mysql
     networks:
@@ -1430,117 +1378,21 @@ networks:
 }
 """
 
-    def build_and_start(self, project_path: Path, proxy: str):
-        """构建并启动服务"""
-        self.progress_dialog.set_building()
-        self.progress_dialog.append_log("开始构建 Docker 镜像...")
-        self.progress_dialog.append_log("")
-
-        self.build_worker = BuildWorker(project_path, convert_proxy_for_docker(proxy) if proxy else None)
-        self.build_worker.progress.connect(self._on_build_progress)
-        self.build_worker.finished.connect(lambda success, msg, logs: self._on_build_finished(success, msg, logs, project_path))
-        
-        # 监听对话框关闭，以便终止构建进程
-        self.progress_dialog.rejected.connect(self._on_progress_dialog_rejected)
-        
-        self.build_worker.start()
-
     def _on_progress_dialog_rejected(self):
-        """进度对话框被取消或关闭"""
-        if hasattr(self, 'build_worker') and self.build_worker and self.build_worker.isRunning():
-            self.progress_dialog.append_log("正在终止构建操作...")
+        if self.build_worker and self.build_worker.isRunning():
             self.build_worker.stop()
-            self.build_worker.wait()
 
-    def _on_build_progress(self, msg: str):
-        """构建进度回调"""
+    def _on_build_progress(self, message):
         if self.progress_dialog and not self.progress_dialog.cancelled:
-            self.progress_dialog.append_log(msg)
+            self.progress_dialog.append_log(message)
 
-    def _cleanup_failed_project(self, project_path: Path):
-        """清理失败的项目：删除容器、镜像和项目文件"""
-        import shutil
-
-        # 删除容器和镜像
-        if project_path.exists():
-            docker = DockerManager(project_path)
-            docker.down(remove_images=True)
-            self.progress_dialog.append_log("已清理容器和镜像")
-
-        # 删除项目文件
-        if project_path.exists():
-            shutil.rmtree(project_path)
-            self.progress_dialog.append_log("已删除项目文件")
-
-    def _on_build_finished(self, success: bool, msg: str, logs: list, project_path: Path):
-        """构建完成回调"""
-        if self.progress_dialog.cancelled:
-            # 用户取消了构建
-            self.progress_dialog.append_log("正在清理...")
-            self._cleanup_failed_project(project_path)
-            self.progress_dialog.accepted.connect(self.reject)
-            return
-
-        if not success:
-            self.progress_dialog.append_log("")
-            self.progress_dialog.append_log(f"❌ 构建失败: {msg}")
-            self.progress_dialog.append_log("正在清理...")
-            self._cleanup_failed_project(project_path)
-            self.progress_dialog.set_finished(False, msg)
-            self.progress_dialog.accepted.connect(self.reject)
-            return
-
-        self.progress_dialog.append_log("")
-        self.progress_dialog.append_log("✓ 镜像构建完成")
-        self.progress_dialog.append_log("正在复制配置文件...")
-
-        # 复制配置文件
-        try:
-            self.copy_configs(project_path)
-            self.progress_dialog.append_log("✓ 配置文件复制完成")
-        except Exception as e:
-            self.progress_dialog.append_log(f"❌ 配置文件复制失败: {str(e)}")
-            self.progress_dialog.append_log("正在清理...")
-            self._cleanup_failed_project(project_path)
-            self.progress_dialog.set_finished(False, str(e))
-            self.progress_dialog.accepted.connect(self.reject)
-            return
-
-        # 启动服务
-        self.progress_dialog.append_log("正在启动服务...")
-        docker = DockerManager(project_path)
-        result = docker.up()
-
-        if result.success:
-            self.progress_dialog.append_log("等待容器就绪...")
-            if not docker.wait_until_running("php", timeout=30):
-                self.progress_dialog.append_log("⚠ 容器启动超时，服务可能尚未就绪")
-            self.progress_dialog.append_log(f"✓ 服务已启动: http://localhost:{self.port_spin.value()}")
-            mysql_config = self._build_mysql_config(self._creating_project_name or "")
-            if mysql_config:
-                self.progress_dialog.append_log("")
-                self.progress_dialog.append_log("MySQL 连接信息:")
-                self.progress_dialog.append_log("  Host: 127.0.0.1")
-                self.progress_dialog.append_log(f"  Port: {mysql_config['port']}")
-                self.progress_dialog.append_log(f"  Database: {mysql_config['database']}")
-                self.progress_dialog.append_log(f"  User: {mysql_config['user']}")
-                self.progress_dialog.append_log(f"  Password: {mysql_config['password']}")
-            redis_config = self._build_redis_config()
-            if redis_config:
-                self.progress_dialog.append_log("")
-                self.progress_dialog.append_log("Redis 连接信息:")
-                self.progress_dialog.append_log("  Host: 127.0.0.1")
-                self.progress_dialog.append_log(f"  Port: {redis_config['port']}")
+    def _on_build_finished(self, success, message, logs):
+        if success:
             self.progress_dialog.set_finished(True)
-            self._created_project_name = self._creating_project_name
-            # 发送信号并关闭
-            self.project_created.emit(self._created_project_name)
-            self.accept()  # 关闭创建项目对话框
+            self.project_created.emit(self._creating_project_name)
+            self.accept()
         else:
-            self.progress_dialog.append_log(f"❌ 服务启动失败: {result.error}")
-            self.progress_dialog.append_log("正在清理...")
-            self._cleanup_failed_project(project_path)
-            self.progress_dialog.set_finished(False, f"启动失败: {result.error}")
+            self.progress_dialog.set_finished(False, message + "；项目文件已保留，可检查后重建或删除。")
             self.progress_dialog.accepted.connect(self.reject)
 
     def copy_configs(self, project_path: Path):

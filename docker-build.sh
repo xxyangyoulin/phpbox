@@ -82,6 +82,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    libxkbcommon0 libegl1 libdbus-1-3 libfontconfig1 \
     libxcb-xinerama0 \
     wget \
     file \
@@ -151,14 +152,14 @@ echo ">>> 执行 PyInstaller 打包..."
 pyinstaller phpbox.spec --noconfirm
 
 # 检查结果
-if [ -f "dist/phpbox" ]; then
+if [ -x "dist/phpbox/phpbox" ]; then
     echo ">>> 构建成功!"
-    chmod +x dist/phpbox
+    chmod +x dist/phpbox/phpbox
 
     # 显示信息
     echo ""
     echo "=== 构建信息 ==="
-    file dist/phpbox
+    file dist/phpbox/phpbox
     ldd --version | head -1
     ls -lh dist/
 else
@@ -207,7 +208,7 @@ mkdir -p "$APPDIR/usr/bin"
 mkdir -p "$APPDIR/usr/share/applications"
 
 # 复制文件
-cp dist/phpbox "$APPDIR/usr/bin/"
+cp -r dist/phpbox/. "$APPDIR/usr/bin/"
 cp /src/phpbox.desktop "$APPDIR/usr/share/applications/"
 ln -sf usr/share/applications/phpbox.desktop "$APPDIR/phpbox.desktop"
 
@@ -292,7 +293,9 @@ Description: PHP Development Environment Manager
 EOF
 
 # 复制可执行文件
-cp dist/phpbox \$DEB_DIR/usr/bin/
+mkdir -p \$DEB_DIR/opt/phpbox
+cp -r dist/phpbox/. \$DEB_DIR/opt/phpbox/
+printf '#!/bin/sh\nexec /opt/phpbox/phpbox \"\\\$@\"\n' > \$DEB_DIR/usr/bin/phpbox
 chmod 755 \$DEB_DIR/usr/bin/phpbox
 
 # 复制 desktop 文件

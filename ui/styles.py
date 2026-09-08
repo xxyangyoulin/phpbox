@@ -126,6 +126,29 @@ class FluentDialog(QDialog):
         super().__init__(parent)
         self._apply_theme_background()
 
+    def reject(self):
+        from PyQt6.QtCore import QTimer
+        active = []
+        for name in ("worker", "build_worker", "operation_worker", "prepare_worker", "log_thread"):
+            worker = getattr(self, name, None)
+            if worker is not None:
+                try:
+                    if worker.isRunning():
+                        active.append(worker)
+                except RuntimeError:
+                    pass
+        if active:
+            for worker in active:
+                if hasattr(worker, "stop"):
+                    worker.stop()
+            QTimer.singleShot(100, self.reject)
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        self.reject()
+        event.ignore()
+
     def _apply_theme_background(self):
         """根据当前主题设置背景色"""
         from qfluentwidgets import isDarkTheme

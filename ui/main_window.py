@@ -1,7 +1,6 @@
 """主窗口"""
 import os
 import re
-import json
 import shlex
 import subprocess
 import shutil
@@ -15,9 +14,9 @@ from typing import Optional, List, Dict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QSystemTrayIcon, QApplication, QGridLayout, QSizePolicy,
-    QGraphicsOpacityEffect, QLabel, QFrame
+    QGraphicsOpacityEffect, QLabel, QFrame, QTabWidget
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QAction, QPainter, QColor, QBrush, QPen, QFont, QPixmap, QCursor
 
 from qfluentwidgets import (
@@ -26,7 +25,7 @@ from qfluentwidgets import (
     BodyLabel, StrongBodyLabel, CaptionLabel, TitleLabel, ImageLabel,
     CardWidget, ScrollArea, FlowLayout, HorizontalSeparator,
     FluentIcon as FIF, InfoBar, InfoBarPosition, MessageBox,
-    SystemTrayMenu, Action, RoundMenu, IconWidget, TextEdit, CheckBox
+    SystemTrayMenu, Action, RoundMenu, IconWidget
 )
 
 from core.project import ProjectManager, Project, get_port_usage, get_project_code_path
@@ -44,53 +43,12 @@ from ui.dialogs.php_config_dialog import PhpConfigDialog, EDITABLE_CONFIGS
 from ui.dialogs.rename_project_dialog import RenameProjectDialog
 from ui.dialogs.rebuild_image import RebuildImageDialog
 from ui.dialogs.task_center import TaskCenterPage
+from ui.worker import OperationWorker, running_workers
+from ui.operations import OperationsPage
 from ui.styles import themed_color
 
 
 _dir_size_cache: dict = {}  # {path: (timestamp, size)}
-SCRIPTS_DIR_NAME = ".phpbox"
-SCRIPTS_FILE_NAME = "scripts.json"
-DEFAULT_PROJECT_SCRIPTS = [
-    {
-        "name": "推送当前分支并部署到测试服",
-        "description": "请先按需修改 SSH 主机和远程项目目录",
-        "confirm": True,
-        "command": """#!/usr/bin/env bash
-set -e
-
-branch_name="${current_branch}"
-
-if [[ -z "$branch_name" ]]; then
-    echo "无法获取当前分支"
-    exit 1
-fi
-
-echo "📦 项目目录: ${project_dir}"
-echo "🌿 当前分支: $branch_name"
-
-echo "⬆️ 推送 origin/$branch_name"
-git pull
-git push
-
-echo "🚀 远程部署分支: $branch_name"
-ssh root@example.com "cd '/path/to/remote/project' && /usr/local/bin/gmr '$branch_name'"
-
-echo "✅ 部署完成"
-""",
-    },
-    {
-        "name": "Composer 安装",
-        "description": "在当前项目目录执行 composer install",
-        "confirm": False,
-        "command": "phpbox composer install",
-    },
-    {
-        "name": "运行测试",
-        "description": "按项目当前目录执行测试命令",
-        "confirm": False,
-        "command": "phpbox php vendor/bin/phpunit",
-    },
-]
 
 def get_dir_size(path: Path) -> int:
     """获取目录大小（字节），缓存 60 秒"""
@@ -116,53 +74,6 @@ def format_size(size_bytes: int) -> str:
             return f"{size_bytes:.1f}{unit}" if unit != 'B' else f"{size_bytes}{unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f}PB"
-
-
-def get_project_scripts_file(project_path: Path) -> Path:
-    return project_path / SCRIPTS_DIR_NAME / SCRIPTS_FILE_NAME
-
-
-def load_project_scripts(project_path: Path) -> List[dict]:
-    scripts_file = get_project_scripts_file(project_path)
-    if not scripts_file.exists():
-        save_project_scripts(project_path, DEFAULT_PROJECT_SCRIPTS)
-        return [script.copy() for script in DEFAULT_PROJECT_SCRIPTS]
-
-    try:
-        scripts = json.loads(scripts_file.read_text())
-    except Exception:
-        scripts = []
-
-    if not isinstance(scripts, list):
-        scripts = []
-
-    normalized = []
-    for script in scripts:
-        if not isinstance(script, dict):
-            continue
-        name = str(script.get("name", "")).strip()
-        command = str(script.get("command", "")).strip()
-        if not name or not command:
-            continue
-        normalized.append({
-            "name": name,
-            "description": str(script.get("description", "")).strip(),
-            "confirm": bool(script.get("confirm", False)),
-            "command": command,
-        })
-
-    if not normalized:
-        save_project_scripts(project_path, DEFAULT_PROJECT_SCRIPTS)
-        return [script.copy() for script in DEFAULT_PROJECT_SCRIPTS]
-
-    return normalized
-
-
-def save_project_scripts(project_path: Path, scripts: List[dict]):
-    scripts_dir = project_path / SCRIPTS_DIR_NAME
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    scripts_file = get_project_scripts_file(project_path)
-    scripts_file.write_text(json.dumps(scripts, ensure_ascii=False, indent=2) + "\n")
 
 
 # 项目图标颜色表
@@ -421,13 +332,14 @@ class ModernDashboardWidget(ScrollArea):
     # PHP 配置点击信号
     config_clicked = pyqtSignal(str)
     extension_install_requested = pyqtSignal(str)
-    script_add_requested = pyqtSignal()
-    script_edit_requested = pyqtSignal(int)
-    script_delete_requested = pyqtSignal(int)
-    script_run_requested = pyqtSignal(int)
+    storage_sizes_loaded = pyqtSignal(object, object, object)
+    service_logs_requested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._storage_project_path = None
+        self._storage_pending = set()
+        self.storage_sizes_loaded.connect(self._on_storage_sizes_loaded)
         self.setWidgetResizable(True)
         self.setStyleSheet(
             "ScrollArea { background-color: transparent; border: none; }"
@@ -438,32 +350,15 @@ class ModernDashboardWidget(ScrollArea):
         self.setup_ui()
         self.setWidget(self.container)
 
-        # 设置透明度效果用于淡入动画
-        self.opacity_effect = QGraphicsOpacityEffect(self.container)
-        self.container.setGraphicsEffect(self.opacity_effect)
-        self.opacity_effect.setOpacity(1.0)
-
-        # 淡入动画
-        self.fade_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_animation.setDuration(200)
-        self.fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-    def fade_in(self):
-        """执行淡入动画"""
-        self.opacity_effect.setOpacity(0.0)
-        self.fade_animation.setStartValue(0.0)
-        self.fade_animation.setEndValue(1.0)
-        self.fade_animation.start()
-
     def setup_ui(self):
         layout = QVBoxLayout(self.container)
         layout.setContentsMargins(32, 24, 32, 32)
-        layout.setSpacing(24)
+        layout.setSpacing(16)
 
         # --- 顶部信息卡片 ---
         self.header_card = CardWidget()
         h_layout = QVBoxLayout(self.header_card)
-        h_layout.setContentsMargins(24, 24, 24, 24)
+        h_layout.setContentsMargins(20, 16, 20, 16)
         h_layout.setSpacing(16)
 
         # 顶部主要区域
@@ -594,49 +489,54 @@ class ModernDashboardWidget(ScrollArea):
         self.alert_card.setVisible(False)
         layout.addWidget(self.alert_card)
 
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(
+            "QTabWidget::pane { border: none; background: transparent; }"
+            "QTabBar::tab { background: transparent; padding: 10px 16px; "
+            f"color: {themed_color('#475569', '#cbd5e1')}; }}"
+            "QTabBar::tab:selected { border-bottom: 2px solid #009faa; }"
+            "QTabWidget > QWidget { background: transparent; }"
+        )
+        layout.addWidget(self.tabs)
+        overview_page = QWidget()
+        overview_layout = QVBoxLayout(overview_page)
+        overview_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.tabs.addTab(overview_page, "概览")
+        self.services_card = CardWidget()
+        services_layout = QVBoxLayout(self.services_card)
+        services_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        services_layout.addWidget(StrongBodyLabel("服务状态"))
+        self.service_rows = {}
+        for service, title in [("php", "PHP"), ("nginx", "Nginx"), ("mysql", "MySQL"), ("redis", "Redis"), ("cron", "Cron")]:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.addWidget(BodyLabel(title))
+            status = CaptionLabel("检查中")
+            row_layout.addWidget(status, 1)
+            logs = PushButton("日志")
+            logs.clicked.connect(lambda checked=False, name=service: self.service_logs_requested.emit(name))
+            row_layout.addWidget(logs)
+            services_layout.addWidget(row)
+            self.service_rows[service] = (row, status)
+        overview_layout.addWidget(self.services_card)
+
         # --- 概览状态块 ---
         self.overview_grid = QGridLayout()
         self.overview_grid.setHorizontalSpacing(16)
         self.overview_grid.setVerticalSpacing(16)
-        self.health_metric = OverviewMetricCard("容器健康")
         self.access_metric = OverviewMetricCard("访问地址")
         self.storage_metric = OverviewMetricCard("项目体积")
-        self.runtime_metric = OverviewMetricCard("运行配置")
         overview_cards = [
-            self.health_metric, self.access_metric,
-            self.storage_metric, self.runtime_metric,
+            self.access_metric, self.storage_metric,
         ]
         for index, card in enumerate(overview_cards):
             self.overview_grid.addWidget(card, index // 2, index % 2)
-        layout.addLayout(self.overview_grid)
-
-        # --- 项目脚本卡片 ---
-        self.scripts_card = CardWidget()
-        scripts_layout = QVBoxLayout(self.scripts_card)
-        scripts_layout.setContentsMargins(24, 20, 24, 20)
-        scripts_layout.setSpacing(16)
-
-        scripts_header = QHBoxLayout()
-        scripts_header.addWidget(StrongBodyLabel("项目脚本"))
-        scripts_header.addStretch()
-        self.add_script_btn = PushButton(FIF.ADD, "新增脚本")
-        scripts_header.addWidget(self.add_script_btn)
-        scripts_layout.addLayout(scripts_header)
-
-        self.scripts_hint_label = CaptionLabel("在项目目录执行常用脚本，支持 ${project_dir}、${project_name}、${current_branch}")
-        self.scripts_hint_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
-        scripts_layout.addWidget(self.scripts_hint_label)
-
-        self.scripts_container = QWidget()
-        self.scripts_list_layout = QVBoxLayout(self.scripts_container)
-        self.scripts_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.scripts_list_layout.setSpacing(10)
-        scripts_layout.addWidget(self.scripts_container)
-        layout.addWidget(self.scripts_card)
+        overview_layout.addLayout(self.overview_grid)
 
         # --- 工具与操作卡片 ---
         self.tools_card = CardWidget()
         tools_layout = QVBoxLayout(self.tools_card)
+        tools_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         tools_layout.setContentsMargins(24, 20, 24, 20)
         tools_layout.setSpacing(16)
 
@@ -646,6 +546,7 @@ class ModernDashboardWidget(ScrollArea):
         tools_layout.addLayout(tools_header)
 
         tools_content_layout = QVBoxLayout()
+        tools_content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         tools_content_layout.setSpacing(16)
 
         # 工具组
@@ -672,6 +573,7 @@ class ModernDashboardWidget(ScrollArea):
 
         def create_tool_group(title, buttons):
             group_layout = QVBoxLayout()
+            group_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
             group_layout.setContentsMargins(0, 0, 0, 0)
             group_layout.setSpacing(8)
             lbl = CaptionLabel(title)
@@ -691,7 +593,7 @@ class ModernDashboardWidget(ScrollArea):
 
         common_group = create_tool_group(
             "常用操作",
-            [self.terminal_btn, self.docker_btn, self.config_btn, self.install_ext_btn, self.composer_install_btn, self.rebuild_image_btn]
+            [self.docker_btn, self.config_btn, self.install_ext_btn, self.composer_install_btn, self.rebuild_image_btn]
         )
         advanced_group = create_tool_group(
             "高级操作",
@@ -703,11 +605,16 @@ class ModernDashboardWidget(ScrollArea):
         tools_content_layout.addLayout(advanced_group)
 
         tools_layout.addLayout(tools_content_layout)
-        layout.addWidget(self.tools_card)
+        tools_page = QWidget()
+        tools_page_layout = QVBoxLayout(tools_page)
+        tools_page_layout.setContentsMargins(0, 0, 0, 0)
+        tools_page_layout.addWidget(self.tools_card, 0, Qt.AlignmentFlag.AlignTop)
+        self.tabs.addTab(tools_page, "工具")
 
         # --- PHP 配置信息卡片 ---
         self.config_card = CardWidget()
         config_layout = QVBoxLayout(self.config_card)
+        config_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         config_layout.setContentsMargins(24, 16, 24, 16)
         config_layout.setSpacing(12)
 
@@ -743,6 +650,7 @@ class ModernDashboardWidget(ScrollArea):
         ]
         self._advanced_config_keys = {"max_execution_time", "max_input_time", "max_file_uploads", "error_reporting"}
         self._advanced_config_widgets = []
+        self._config_grid_widgets = []
 
         for i, (key, label) in enumerate(config_items):
             row = i // 2
@@ -781,6 +689,7 @@ class ModernDashboardWidget(ScrollArea):
             self.config_grid.addWidget(name_label, row, col)
             self.config_grid.addWidget(grid_widget, row, col + 1)
             self.config_labels[key] = value_label
+            self._config_grid_widgets.append((key, name_label, grid_widget))
             if key in self._advanced_config_keys:
                 self._advanced_config_widgets.extend([name_label, grid_widget])
 
@@ -841,7 +750,11 @@ class ModernDashboardWidget(ScrollArea):
         self.missing_ext_toggle_btn.setVisible(False)
         config_layout.addWidget(self.missing_ext_toggle_btn, 0, Qt.AlignmentFlag.AlignLeft)
 
-        layout.addWidget(self.config_card)
+        config_page = QWidget()
+        config_page_layout = QVBoxLayout(config_page)
+        config_page_layout.setContentsMargins(0, 0, 0, 0)
+        config_page_layout.addWidget(self.config_card, 0, Qt.AlignmentFlag.AlignTop)
+        self.tabs.insertTab(1, config_page, "PHP 配置与扩展")
 
         layout.addStretch(1)
         self._installed_extensions_expanded = False
@@ -850,7 +763,6 @@ class ModernDashboardWidget(ScrollArea):
         self._missing_extensions = []
         self._set_advanced_config_visible(False)
         self._refresh_header_actions(False, False)
-        self.add_script_btn.clicked.connect(self.script_add_requested.emit)
 
     def _copy_path(self, event):
         """点击复制项目路径"""
@@ -874,8 +786,19 @@ class ModernDashboardWidget(ScrollArea):
         return handler
 
     def _set_advanced_config_visible(self, visible: bool):
-        for widget in self._advanced_config_widgets:
-            widget.setVisible(visible)
+        for _, label, value in self._config_grid_widgets:
+            self.config_grid.removeWidget(label)
+            self.config_grid.removeWidget(value)
+        index = 0
+        for key, label, value in self._config_grid_widgets:
+            shown = visible or key not in self._advanced_config_keys
+            label.setVisible(shown)
+            value.setVisible(shown)
+            if shown:
+                row, column = divmod(index, 2)
+                self.config_grid.addWidget(label, row, column * 2)
+                self.config_grid.addWidget(value, row, column * 2 + 1)
+                index += 1
         self.advanced_config_btn.setText("收起更多配置" if visible else "显示更多配置")
 
     def _toggle_advanced_config(self):
@@ -892,16 +815,6 @@ class ModernDashboardWidget(ScrollArea):
                     widget.deleteLater()
             elif hasattr(item, 'deleteLater'):
                 item.deleteLater()
-
-    def _clear_box_layout(self, layout: QVBoxLayout):
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            child_layout = item.layout()
-            if widget:
-                widget.deleteLater()
-            elif child_layout:
-                self._clear_box_layout(child_layout)
 
     def _create_extension_label(self, ext: str) -> CaptionLabel:
         label = CaptionLabel(ext)
@@ -950,58 +863,6 @@ class ModernDashboardWidget(ScrollArea):
         self.missing_ext_toggle_btn.setText("收起未安装扩展" if self._missing_extensions_expanded else "展开全部未安装扩展")
         QTimer.singleShot(0, lambda: self.missing_ext_layout._doLayout(self.missing_ext_container.rect(), True))
 
-    def set_project_scripts(self, scripts: List[dict]):
-        self._clear_box_layout(self.scripts_list_layout)
-
-        if not scripts:
-            empty_label = CaptionLabel("暂无项目脚本")
-            empty_label.setStyleSheet(f"color: {themed_color('#94a3b8', '#64748b')};")
-            self.scripts_list_layout.addWidget(empty_label)
-            return
-
-        for index, script in enumerate(scripts):
-            card = QFrame()
-            card.setStyleSheet(
-                f"QFrame {{"
-                f"background-color: {themed_color('#f8fafc', 'rgba(148,163,184,0.08)')};"
-                f"border: 1px solid {themed_color('#e2e8f0', '#334155')};"
-                f"border-radius: 10px;"
-                f"}}"
-            )
-            row_layout = QHBoxLayout(card)
-            row_layout.setContentsMargins(14, 12, 14, 12)
-            row_layout.setSpacing(12)
-
-            info_layout = QVBoxLayout()
-            info_layout.setSpacing(2)
-            name_label = StrongBodyLabel(script["name"])
-            desc = script.get("description", "").strip()
-            desc_label = CaptionLabel(desc or "在当前项目目录执行脚本")
-            desc_label.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
-            desc_label.setWordWrap(True)
-            info_layout.addWidget(name_label)
-            info_layout.addWidget(desc_label)
-            row_layout.addLayout(info_layout, 1)
-
-            if script.get("confirm"):
-                confirm_label = CaptionLabel("执行前确认")
-                confirm_label.setStyleSheet(f"color: {themed_color('#f59e0b', '#fbbf24')};")
-                row_layout.addWidget(confirm_label, 0, Qt.AlignmentFlag.AlignVCenter)
-
-            run_btn = PrimaryPushButton(FIF.PLAY, "执行")
-            edit_btn = PushButton(FIF.EDIT, "编辑")
-            delete_btn = PushButton(FIF.DELETE, "删除")
-            run_btn.clicked.connect(lambda checked=False, i=index: self.script_run_requested.emit(i))
-            edit_btn.clicked.connect(lambda checked=False, i=index: self.script_edit_requested.emit(i))
-            delete_btn.clicked.connect(lambda checked=False, i=index: self.script_delete_requested.emit(i))
-            row_layout.addWidget(run_btn)
-            row_layout.addWidget(edit_btn)
-            row_layout.addWidget(delete_btn)
-
-            self.scripts_list_layout.addWidget(card)
-
-        self.scripts_list_layout.addStretch(1)
-
     def _refresh_header_actions(self, is_running: bool, is_partial: bool):
         while self.header_action_layout.count():
             item = self.header_action_layout.takeAt(0)
@@ -1019,6 +880,7 @@ class ModernDashboardWidget(ScrollArea):
         for widget in actions:
             widget.setParent(self.header_card)
             self.header_action_layout.addWidget(widget)
+        self.header_action_layout.addWidget(self.terminal_btn)
         self.header_action_layout.addStretch(1)
 
     def _update_alert(self, project: Project, loading: bool):
@@ -1041,15 +903,20 @@ class ModernDashboardWidget(ScrollArea):
 
         self.alert_card.setVisible(False)
 
-    def update_project(self, project: Project, loading: bool = False, animate: bool = False):
+    def update_project(self, project: Project, loading: bool = False):
         """更新项目显示
 
         Args:
             project: 项目对象
             loading: 是否正在加载中
-            animate: 是否触发淡入动画
         """
         self.name_label.setText(project.name)
+        for service, (row, status) in self.service_rows.items():
+            enabled = service in ("php", "nginx") or project.has_service(service)
+            row.setVisible(enabled)
+            running = getattr(project, service + "_running")
+            status.setText("检查中…" if loading else ("运行中" if running else "已停止"))
+            status.setStyleSheet("color: #16a34a;" if running and not loading else "")
         
         # 正在加载时颜色不变，部分运行显示警告色
         is_running = loading or project.is_running
@@ -1060,15 +927,10 @@ class ModernDashboardWidget(ScrollArea):
         # 更新头像
         self.avatar_label.setPixmap(make_project_icon(project.name, is_running, is_partial).pixmap(48, 48))
 
-        # 计算目录大小和日志大小
         project_path = Path(project.path)
-        total_size = get_dir_size(project_path)
-        logs_path = project_path / "logs"
-        logs_size = get_dir_size(logs_path) if logs_path.exists() else 0
+        self._storage_project_path = project_path
 
-        self.stats_line.setText(
-            f"PHP {project.php_version}  ·  端口 :{project.port}"
-        )
+        self.stats_line.setText(f"PHP {project.php_version}  ·  http://localhost:{project.port}")
         self.stats_line.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
         self.health_detail_label.setText(project.health_summary)
         self.path_label.setText(str(project.path))
@@ -1079,7 +941,7 @@ class ModernDashboardWidget(ScrollArea):
                 "background-color: #f59e0b; color: white; border-radius: 14px; font-weight: bold;"
             )
             self.toggle_btn.setEnabled(False)
-        elif project.is_running:
+        elif project.health_status == "healthy":
             self.status_badge.setText("运行中")
             self.status_badge.setStyleSheet(
                 "background-color: #22c55e; color: white; border-radius: 14px; font-weight: bold;"
@@ -1088,12 +950,12 @@ class ModernDashboardWidget(ScrollArea):
             self.toggle_btn.setIcon(FIF.PAUSE)
             self.toggle_btn.setEnabled(True)
         elif project.health_status == "partial":
-            self.status_badge.setText("异常")
+            self.status_badge.setText("部分运行")
             self.status_badge.setStyleSheet(
                 "background-color: #f59e0b; color: white; border-radius: 14px; font-weight: bold;"
             )
-            self.toggle_btn.setText("启动")
-            self.toggle_btn.setIcon(FIF.PLAY)
+            self.toggle_btn.setText("停止" if project.is_running else "启动")
+            self.toggle_btn.setIcon(FIF.PAUSE if project.is_running else FIF.PLAY)
             self.toggle_btn.setEnabled(True)
         else:
             self.status_badge.setText("已停止")
@@ -1104,35 +966,26 @@ class ModernDashboardWidget(ScrollArea):
             self.toggle_btn.setIcon(FIF.PLAY)
             self.toggle_btn.setEnabled(True)
 
-        if loading:
-            self.health_metric.set_content("刷新中", "正在重新获取容器状态", "warning")
-        elif project.health_status == "healthy":
-            self.health_metric.set_content("正常", project.health_summary, "success")
-        elif project.health_status == "partial":
-            self.health_metric.set_content("需处理", project.health_summary, "warning")
-        else:
-            self.health_metric.set_content("已停止", project.health_summary, "muted")
-
         self.access_metric.set_content(
             f"http://localhost:{project.port}",
             "浏览器入口" if project.is_running else "项目启动后可直接访问",
             "normal" if project.is_running else "muted"
         )
-        self.storage_metric.set_content(
-            format_size(total_size),
-            f"日志 {format_size(logs_size)}",
-            "normal"
-        )
-        runtime_detail = "Xdebug/OPCache 状态将在项目运行后显示"
-        runtime_tone = "muted"
-        if project.health_status == "partial":
-            runtime_detail = "项目异常，建议先执行重启或查看日志"
-            runtime_tone = "warning"
-        elif project.is_running:
-            runtime_detail = "容器运行中，可查看 PHP 配置和扩展"
-            runtime_tone = "success"
-        self.runtime_metric.set_content(f"PHP {project.php_version}", runtime_detail, runtime_tone)
-
+        cached_total = _dir_size_cache.get(project_path)
+        cached_logs = _dir_size_cache.get(project_path / "logs")
+        if cached_total and cached_logs:
+            self.storage_metric.set_content(
+                format_size(cached_total[1]), f"日志 {format_size(cached_logs[1])}", "normal"
+            )
+        else:
+            self.storage_metric.set_content("统计中...", "正在统计项目和日志大小", "muted")
+        if (not cached_total or not cached_logs
+                or _time.monotonic() - min(cached_total[0], cached_logs[0]) >= 60):
+            if project_path not in self._storage_pending:
+                self._storage_pending.add(project_path)
+                threading.Thread(
+                    target=self._load_storage_sizes, args=(project_path,), daemon=True
+                ).start()
         self._refresh_header_actions(project.is_running, project.health_status == "partial")
         self._update_alert(project, loading)
 
@@ -1148,9 +1001,18 @@ class ModernDashboardWidget(ScrollArea):
             else:
                 btn.setToolTip("需要先启动项目")
 
-        # 触发淡入动画（仅在切换项目时）
-        if animate:
-            self.fade_in()
+
+    def _load_storage_sizes(self, project_path: Path):
+        total_size = get_dir_size(project_path)
+        logs_size = get_dir_size(project_path / "logs")
+        self.storage_sizes_loaded.emit(project_path, total_size, logs_size)
+
+    def _on_storage_sizes_loaded(self, project_path: Path, total_size: int, logs_size: int):
+        self._storage_pending.discard(project_path)
+        if project_path == self._storage_project_path:
+            self.storage_metric.set_content(
+                format_size(total_size), f"日志 {format_size(logs_size)}", "normal"
+            )
 
     def _clear_php_info(self):
         """清空 PHP 配置显示"""
@@ -1219,8 +1081,12 @@ class ModernDashboardWidget(ScrollArea):
 class ProjectDashboardPage(QWidget):
     """项目仪表盘页面（右侧内容区）"""
 
+    php_info_loaded = pyqtSignal(str, int, object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._php_info_request = 0
+        self.php_info_loaded.connect(self._on_php_info_loaded)
         self.setObjectName("ProjectDashboardPage")
         self.current_project: Optional[Project] = None
         self.project_manager = ProjectManager()
@@ -1313,10 +1179,6 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.rename_action.triggered.connect(self.rename_project)
         self.dashboard.change_port_action.triggered.connect(self.change_port)
         self.dashboard.alert_action_btn.clicked.connect(self.view_logs)
-        self.dashboard.script_add_requested.connect(self.add_project_script)
-        self.dashboard.script_edit_requested.connect(self.edit_project_script)
-        self.dashboard.script_delete_requested.connect(self.delete_project_script)
-        self.dashboard.script_run_requested.connect(self.run_project_script)
         layout.addWidget(self.dashboard, 1)
 
         self.show_project_view(False)
@@ -1354,9 +1216,10 @@ class ProjectDashboardPage(QWidget):
             project: 项目对象
             loading: 是否正在加载中
         """
+        self._php_info_request += 1
+        self.dashboard._clear_php_info()
         self.current_project = project
-        self.dashboard.update_project(project, loading=loading, animate=True)
-        self.dashboard.set_project_scripts(load_project_scripts(Path(project.path)))
+        self.dashboard.update_project(project, loading=loading)
         self.show_project_view(True)
 
         # 滚动到顶部
@@ -1372,7 +1235,6 @@ class ProjectDashboardPage(QWidget):
                 if p.name == self.current_project.name:
                     self.current_project = p
                     self.dashboard.update_project(p)
-                    self.dashboard.set_project_scripts(load_project_scripts(Path(p.path)))
                     # 通知主窗口刷新对应的侧边栏图标状态
                     main_win = self.window()
                     if hasattr(main_win, 'update_sidebar_item_state'):
@@ -1398,33 +1260,31 @@ class ProjectDashboardPage(QWidget):
         if not self.current_project:
             return
 
-        # 端口冲突检测
-        try:
-            port = int(self.current_project.port)
-        except ValueError:
-            port = 8080
+        self._run_project_operation("up")
 
-        # 异步检查端口并启动
+    def _run_project_operation(self, operation):
         project = self.current_project
-        threading.Thread(
-            target=self._async_check_port_and_start,
-            args=(project.path, project.name, port),
-            daemon=True
-        ).start()
-
-    def _async_check_port_and_start(self, path: str, name: str, port: int):
-        """异步检查端口并启动"""
-        # 检查端口是否被占用
-        usage = get_port_usage(port, name, include_configured_projects=False)
-        if usage:
-            QTimer.singleShot(0, functools.partial(
-                self._notify, "端口冲突", f"端口 {port} 已被 {usage} 占用", "error"
-            ))
+        panel = self.window().operations_page
+        key = str(project.path)
+        if panel.is_busy(key):
+            self._notify("操作进行中", "请等待当前项目操作完成", "warning")
             return
 
-        # 启动服务
-        result = DockerManager(path).up()
-        QTimer.singleShot(0, functools.partial(self._on_docker_operation_result, result, name, "up"))
+        def run():
+            if operation == "up":
+                usage = get_port_usage(int(project.port), project.name, include_configured_projects=False)
+                if usage:
+                    raise RuntimeError(f"端口 {project.port} 已被 {usage} 占用")
+            result = getattr(DockerManager(project.path), operation)()
+            if not result.success:
+                raise RuntimeError(str(result.error))
+            return result
+
+        worker = OperationWorker(run)
+        panel.track(worker, f"{project.name} · {self._OP_LABELS[operation][0]}", key)
+        worker.succeeded.connect(lambda result: self._on_docker_operation_result(result, project.name, operation))
+        worker.failed.connect(lambda message: self._notify("操作失败", message, "error"))
+        worker.start()
 
     # 操作名 -> (成功标题, 成功动词, 失败标题)
     _OP_LABELS = {
@@ -1432,12 +1292,6 @@ class ProjectDashboardPage(QWidget):
         "stop":    ("服务停止", "已停止", "停止失败"),
         "restart": ("服务重启", "已重启", "重启失败"),
     }
-
-    def _async_docker_operation(self, path: str, name: str, operation: str):
-        """异步执行 docker 操作（up/stop/restart）"""
-        result = getattr(DockerManager(path), operation)()
-        QTimer.singleShot(0, functools.partial(
-            self._on_docker_operation_result, result, name, operation))
 
     def _on_docker_operation_result(self, result, name: str, operation: str):
         """docker 操作结果回调"""
@@ -1452,12 +1306,7 @@ class ProjectDashboardPage(QWidget):
     def stop_project(self):
         if not self.current_project:
             return
-        project = self.current_project
-        threading.Thread(
-            target=self._async_docker_operation,
-            args=(project.path, project.name, "stop"),
-            daemon=True
-        ).start()
+        self._run_project_operation("stop")
 
     def restart_project(self):
         """重启项目（restart 不需要检查端口，因为只是重启容器内的进程）"""
@@ -1465,12 +1314,7 @@ class ProjectDashboardPage(QWidget):
             return
         if not self._ensure_docker_ready():
             return
-        project = self.current_project
-        threading.Thread(
-            target=self._async_docker_operation,
-            args=(project.path, project.name, "restart"),
-            daemon=True
-        ).start()
+        self._run_project_operation("restart")
 
     def _reload_current(self):
         """异步刷新当前项目状态"""
@@ -1488,6 +1332,12 @@ class ProjectDashboardPage(QWidget):
         """刷新完成回调"""
         self.projects = projects
         self.refresh_status()
+
+    def view_service_logs(self, service):
+        if self.current_project:
+            dialog = LogViewerDialog(self.current_project.path, self.current_project.name, self)
+            dialog.service_combo.setCurrentText(service)
+            dialog.show()
 
     def view_logs(self):
         if not self.current_project:
@@ -1606,30 +1456,34 @@ class ProjectDashboardPage(QWidget):
             return
         w = MessageBox(
             "确认删除",
-            f"确定要删除项目 '{self.current_project.name}' 吗？\n\n这将删除所有容器和数据卷！",
+            f"确定要删除项目 '{self.current_project.name}' 吗？\n\n这将永久删除项目源码、配置、所有容器和数据卷！",
             self.window()
         )
         if w.exec():
-            if self.project_manager.delete_project(self.current_project):
-                self.current_project = None
-                self.show_project_view(False)
-                self._notify("项目删除", "项目已删除")
-                # 通知父级刷新列表
-                parent = self.parent()
-                while parent and not isinstance(parent, MainWindow):
-                    parent = parent.parent()
-                if parent:
-                    parent.load_projects()
-            else:
-                InfoBar.error(
-                    title="删除失败",
-                    content="无法删除项目文件夹或容器",
-                    orient=Qt.Orientation.Horizontal,
-                    isClosable=True,
-                    position=InfoBarPosition.TOP,
-                    duration=3000,
-                    parent=self
-                )
+            if getattr(self, "_deleting", False):
+                return
+            self._deleting = True
+            target = self.current_project
+            self._delete_target = target
+            self.operation_worker = OperationWorker(lambda: self.project_manager.delete_project(target))
+            self.operation_worker.succeeded.connect(self._on_project_deleted)
+            self.operation_worker.failed.connect(self._on_delete_failed)
+            self.operation_worker.start()
+
+    def _on_delete_failed(self, message):
+        self._deleting = False
+        self._notify("删除失败", message, "error")
+
+    def _on_project_deleted(self, success):
+        self._deleting = False
+        if not success:
+            self._notify("删除失败", "容器或文件清理失败，请检查日志", "error")
+            return
+        if self.current_project == self._delete_target:
+            self.current_project = None
+            self.show_project_view(False)
+        self._notify("项目删除", "项目已删除")
+        self.window().load_projects()
 
     def rename_project(self):
         """打开项目设置对话框"""
@@ -1707,8 +1561,8 @@ class ProjectDashboardPage(QWidget):
             return
 
         # 计算日志总大小
-        total_size = get_dir_size(logs_path)
-        size_str = format_size(total_size)
+        cached = _dir_size_cache.get(logs_path)
+        size_str = format_size(cached[1]) if cached else "尚未统计"
 
         # 确认对话框
         w = MessageBox(
@@ -1719,51 +1573,26 @@ class ProjectDashboardPage(QWidget):
         if not w.exec():
             return
 
-        project_path = str(self.current_project.path)
-        docker = DockerManager(self.current_project.path)
-        compose_cmd = docker.get_compose_command()
-        if not compose_cmd:
-            InfoBar.error(
-                title="清理失败",
-                content="未检测到 docker compose 或 docker-compose",
-                orient=Qt.Orientation.Horizontal,
-                parent=self
-            )
-            return
+        project_path = self.current_project.path
+        def clear():
+            docker = DockerManager(project_path)
+            for service, directory in [("nginx", "/var/log/nginx"), ("php", "/var/log/php-fpm")]:
+                result = docker.exec_command(service, ["sh", "-c", 'for f in "$1"/*.log; do [ ! -f "$f" ] || : > "$f" || exit; done', "sh", directory])
+                if not result.success:
+                    raise RuntimeError(result.error)
+            _dir_size_cache.pop(project_path, None)
+            _dir_size_cache.pop(project_path / "logs", None)
+        self.operation_worker = OperationWorker(clear)
+        self.operation_worker.succeeded.connect(self._on_logs_cleared)
+        self.operation_worker.failed.connect(self._on_logs_clear_failed)
+        self.operation_worker.start()
 
-        try:
-            # 通过 docker exec 在容器内清空日志
-            # 清空 nginx 日志
-            subprocess.run(
-                compose_cmd + ["exec", "-T", "nginx", "sh", "-c",
-                               "for f in /var/log/nginx/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
-                cwd=project_path,
-                capture_output=True,
-                timeout=30
-            )
-            # 清空 php-fpm 日志
-            subprocess.run(
-                compose_cmd + ["exec", "-T", "php", "sh", "-c",
-                               "for f in /var/log/php-fpm/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
-                cwd=project_path,
-                capture_output=True,
-                timeout=30
-            )
+    def _on_logs_cleared(self, result):
+        self._notify("清理完成", "日志已清空")
+        self._reload_current()
 
-            InfoBar.success(
-                title="清理完成",
-                content=f"已清空日志文件，释放 {size_str}",
-                orient=Qt.Orientation.Horizontal,
-                parent=self
-            )
-            self._reload_current()
-        except Exception as e:
-            InfoBar.error(
-                title="清理失败",
-                content=str(e),
-                orient=Qt.Orientation.Horizontal,
-                parent=self
-            )
+    def _on_logs_clear_failed(self, message):
+        self._notify("清理失败", message, "error")
 
     def open_code_log_terminal(self):
         """打开代码日志终端（tail -f 代码目录/runtime/*.log）"""
@@ -1821,7 +1650,7 @@ class ProjectDashboardPage(QWidget):
             self.current_project.path,
             self.current_project.name,
             self
-        ).exec()
+        ).show()
 
     def _install_missing_extension(self, extension: str):
         if not self.current_project:
@@ -1844,7 +1673,7 @@ class ProjectDashboardPage(QWidget):
             self.current_project.name,
             self,
             initial_extensions=[extension]
-        ).exec()
+        ).show()
 
     def _refresh_php_info(self):
         """异步刷新 PHP 配置信息"""
@@ -1852,6 +1681,8 @@ class ProjectDashboardPage(QWidget):
             self.dashboard._clear_php_info()
             return
 
+        self._php_info_request += 1
+        request = self._php_info_request
         # 显示加载状态
         for key, label in self.dashboard.config_labels.items():
             label.setText("加载中...")
@@ -1862,19 +1693,20 @@ class ProjectDashboardPage(QWidget):
         project_path = str(self.current_project.path)
         threading.Thread(
             target=self._async_get_php_info,
-            args=(project_path,),
+            args=(project_path, request),
             daemon=True
         ).start()
 
-    def _async_get_php_info(self, project_path: str):
+    def _async_get_php_info(self, project_path: str, request: int):
         """异步获取 PHP 配置信息"""
         docker = DockerManager(project_path)
         info = docker.get_php_info()
-        QTimer.singleShot(0, functools.partial(self._on_php_info_loaded, info))
+        self.php_info_loaded.emit(project_path, request, info)
 
-    def _on_php_info_loaded(self, info: dict):
-        """PHP 信息加载完成回调"""
-        self.dashboard.update_php_info(info)
+    def _on_php_info_loaded(self, project_path: str, request: int, info: dict):
+        if (self.current_project and str(self.current_project.path) == project_path
+                and self.current_project.is_running and request == self._php_info_request):
+            self.dashboard.update_php_info(info)
 
     def _on_php_config_clicked(self, config_key: str):
         """PHP 配置项点击处理"""
@@ -2000,206 +1832,6 @@ class ProjectDashboardPage(QWidget):
             if package:
                 self._run_composer_command("require", package)
 
-    def _get_current_project_scripts(self) -> List[dict]:
-        if not self.current_project:
-            return []
-        return load_project_scripts(Path(self.current_project.path))
-
-    def _save_current_project_scripts(self, scripts: List[dict]):
-        if not self.current_project:
-            return
-        save_project_scripts(Path(self.current_project.path), scripts)
-        self.dashboard.set_project_scripts(scripts)
-
-    def _show_script_dialog(self, script: Optional[dict] = None) -> Optional[dict]:
-        from qfluentwidgets import MessageBoxBase, LineEdit
-
-        box = MessageBoxBase(self.window())
-        box.titleLabel = StrongBodyLabel("项目脚本")
-        box.contentLabel = CaptionLabel("脚本会在当前项目目录执行，支持 ${project_dir}、${project_name}、${current_branch}")
-
-        box.name_input = LineEdit(box)
-        box.name_input.setPlaceholderText("脚本名称")
-        box.name_input.setText((script or {}).get("name", ""))
-        box.name_input.setClearButtonEnabled(True)
-
-        box.desc_input = LineEdit(box)
-        box.desc_input.setPlaceholderText("脚本说明")
-        box.desc_input.setText((script or {}).get("description", ""))
-        box.desc_input.setClearButtonEnabled(True)
-
-        box.confirm_cb = CheckBox("执行前确认", box)
-        box.confirm_cb.setChecked(bool((script or {}).get("confirm", False)))
-
-        box.command_input = TextEdit(box)
-        box.command_input.setPlaceholderText("请输入脚本命令")
-        box.command_input.setMinimumHeight(220)
-        box.command_input.setPlainText((script or {}).get("command", ""))
-
-        box.viewLayout.addWidget(box.contentLabel)
-        box.viewLayout.addWidget(box.name_input)
-        box.viewLayout.addWidget(box.desc_input)
-        box.viewLayout.addWidget(box.confirm_cb)
-        box.viewLayout.addWidget(box.command_input)
-
-        box.yesButton.setText("保存")
-        box.cancelButton.setText("取消")
-
-        if not box.exec():
-            return None
-
-        name = box.name_input.text().strip()
-        command = box.command_input.toPlainText().strip()
-        if not name or not command:
-            InfoBar.warning(
-                title="提示",
-                content="脚本名称和命令不能为空",
-                orient=Qt.Orientation.Horizontal,
-                parent=self
-            )
-            return None
-
-        return {
-            "name": name,
-            "description": box.desc_input.text().strip(),
-            "confirm": box.confirm_cb.isChecked(),
-            "command": command,
-        }
-
-    def _get_current_branch(self, project_path: Path) -> str:
-        try:
-            result = subprocess.run(
-                ["git", "branch", "--show-current"],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-        except Exception:
-            return ""
-        if result.returncode != 0:
-            return ""
-        return result.stdout.strip()
-
-    def _render_script_command(self, command: str) -> str:
-        if not self.current_project:
-            return command
-
-        project_path = Path(self.current_project.path)
-        current_branch = self._get_current_branch(project_path)
-        if "${current_branch}" in command and not current_branch:
-            raise RuntimeError("当前项目不是有效的 Git 仓库，或无法获取当前分支")
-
-        return (
-            command
-            .replace("${project_dir}", str(project_path))
-            .replace("${project_name}", self.current_project.name)
-            .replace("${current_branch}", current_branch)
-        )
-
-    def _run_script_in_terminal(self, name: str, command: str):
-        if not self.current_project:
-            return
-
-        project_dir = str(self.current_project.path)
-        shell_body = (
-            f"cd {shlex.quote(project_dir)} && "
-            f"bash -lc {shlex.quote(command)}; "
-            "exit_code=$?; "
-            "echo; "
-            f"echo '脚本执行完成: {name}'; "
-            "echo \"退出码: $exit_code\"; "
-            "exec $SHELL"
-        )
-
-        terminal = os.environ.get("TERMINAL") or "x-terminal-emulator"
-        self._launch_terminal([
-            [terminal, "-e", "sh", "-c", shell_body],
-            ["deepin-terminal", "-C", shell_body],
-            ["kitty", "--directory", project_dir, "sh", "-c", shell_body],
-            ["alacritty", "--working-directory", project_dir, "-e", "sh", "-c", shell_body],
-            ["gnome-terminal", "--working-directory", project_dir, "--", "sh", "-c", shell_body],
-            ["konsole", "--workdir", project_dir, "-e", "sh", "-c", shell_body],
-            ["xfce4-terminal", "--working-directory", project_dir, "-e", shell_body],
-            ["xterm", "-e", "sh", "-c", shell_body],
-        ])
-
-    def add_project_script(self):
-        if not self.current_project:
-            return
-
-        script = self._show_script_dialog()
-        if not script:
-            return
-
-        scripts = self._get_current_project_scripts()
-        scripts.append(script)
-        self._save_current_project_scripts(scripts)
-        self._notify("脚本已保存", script["name"], "success")
-
-    def edit_project_script(self, index: int):
-        scripts = self._get_current_project_scripts()
-        if index < 0 or index >= len(scripts):
-            return
-
-        updated = self._show_script_dialog(scripts[index])
-        if not updated:
-            return
-
-        scripts[index] = updated
-        self._save_current_project_scripts(scripts)
-        self._notify("脚本已更新", updated["name"], "success")
-
-    def delete_project_script(self, index: int):
-        scripts = self._get_current_project_scripts()
-        if index < 0 or index >= len(scripts):
-            return
-
-        script = scripts[index]
-        box = MessageBox(
-            "删除脚本",
-            f"确定删除脚本 \"{script['name']}\" 吗？",
-            self
-        )
-        box.yesButton.setText("删除")
-        box.cancelButton.setText("取消")
-        if not box.exec():
-            return
-
-        del scripts[index]
-        self._save_current_project_scripts(scripts)
-        self._notify("脚本已删除", script["name"], "success")
-
-    def run_project_script(self, index: int):
-        scripts = self._get_current_project_scripts()
-        if index < 0 or index >= len(scripts):
-            return
-
-        script = scripts[index]
-        if script.get("confirm"):
-            box = MessageBox(
-                "执行脚本",
-                f"确定执行脚本 \"{script['name']}\" 吗？",
-                self
-            )
-            box.yesButton.setText("执行")
-            box.cancelButton.setText("取消")
-            if not box.exec():
-                return
-
-        try:
-            command = self._render_script_command(script["command"])
-        except RuntimeError as e:
-            InfoBar.error(
-                title="执行失败",
-                content=str(e),
-                orient=Qt.Orientation.Horizontal,
-                parent=self
-            )
-            return
-
-        self._run_script_in_terminal(script["name"], command)
-
     def rebuild_image(self):
         """重建当前项目镜像"""
         if not self.current_project:
@@ -2213,7 +1845,7 @@ class ProjectDashboardPage(QWidget):
             self
         )
         dialog.rebuild_finished.connect(self._reload_current)
-        dialog.exec()
+        dialog.show()
 
     def _notify(self, title: str, msg: str, notify_type: str = "success"):
         """发送通知（InfoBar + 系统托盘）
@@ -2252,9 +1884,18 @@ class MainWindow(FluentWindow):
         # 直接将仪表盘页加入 stackedWidget
         self.dashboard_page = ProjectDashboardPage(self)
         self.stackedWidget.addWidget(self.dashboard_page)
+        self.operations_page = OperationsPage(self)
+        self.stackedWidget.addWidget(self.operations_page)
         self.task_center_page = TaskCenterPage(self)
         self.stackedWidget.addWidget(self.task_center_page)
         self.stackedWidget.setCurrentWidget(self.dashboard_page)
+
+        self.dashboard_page.dashboard.service_logs_requested.connect(self.dashboard_page.view_service_logs)
+        self.navigationInterface.addItem(
+            routeKey='operations', icon=FIF.HISTORY, text="后台操作",
+            onClick=lambda: self.stackedWidget.setCurrentWidget(self.operations_page),
+            position=NavigationItemPosition.BOTTOM
+        )
 
         # 底部操作项
         self.navigationInterface.addItem(
@@ -2670,6 +2311,13 @@ class MainWindow(FluentWindow):
             self.tray_icon.showMessage(title, msg, tray_icon_type, 3000)
 
     def quit_app(self):
+        workers = running_workers()
+        if workers:
+            for worker in workers:
+                if hasattr(worker, "stop"):
+                    worker.stop()
+            QTimer.singleShot(100, self.quit_app)
+            return
         self.tray_icon.hide()
         QApplication.quit()
 

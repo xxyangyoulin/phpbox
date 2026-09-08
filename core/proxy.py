@@ -2,6 +2,8 @@
 import os
 import subprocess
 import re
+import shlex
+from urllib.parse import urlsplit, urlunsplit
 from pathlib import Path
 from typing import Optional
 
@@ -52,21 +54,30 @@ def get_host_ip_for_docker() -> Optional[str]:
     return None
 
 
+def validate_proxy_url(proxy_url: str):
+    parsed = urlsplit(proxy_url)
+    if (parsed.scheme not in {"http", "https", "socks5", "socks5h"}
+            or not parsed.hostname or re.search(r"[\s\x00-\x1f]", proxy_url)
+            or not re.fullmatch(r"[a-zA-Z0-9.:-]+", parsed.hostname)
+            or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+        raise ValueError("代理地址格式无效")
+    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+        raise ValueError("代理端口必须在 1–65535 之间")
+    return parsed
+
+
 def convert_proxy_for_docker(proxy_url: str) -> Optional[str]:
-    """将代理地址转换为 Docker 容器可访问的地址"""
     if not proxy_url:
         return None
-
+    parsed = validate_proxy_url(proxy_url)
+    if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return proxy_url
     host_ip = get_host_ip_for_docker()
     if not host_ip:
         return proxy_url
-
-    # 替换 127.0.0.1 和 localhost
-    converted = proxy_url
-    converted = re.sub(r'127\.0\.0\.1', host_ip, converted)
-    converted = re.sub(r'localhost', host_ip, converted)
-
-    return converted
+    auth = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+    netloc = auth + host_ip + (f":{parsed.port}" if parsed.port is not None else "")
+    return urlunsplit(parsed._replace(netloc=netloc))
 
 
 SHELL_PROXY_BEGIN = "# >>> phpbox proxy helpers >>>"
@@ -79,7 +90,7 @@ def build_shell_proxy_block(proxy_url: Optional[str]) -> str:
     docker_proxy = convert_proxy_for_docker(proxy_url) if proxy_url else None
     if docker_proxy:
         proxy_func = f"""proxy () {{
-    export http_proxy="{docker_proxy}"
+    export http_proxy={shlex.quote(docker_proxy)}
     export https_proxy="$http_proxy"
     export HTTP_PROXY="$http_proxy"
     export HTTPS_PROXY="$http_proxy"
@@ -127,7 +138,7 @@ def upsert_proxy_block(content: str, start_marker: str, end_marker: str, replace
         re.DOTALL
     )
     if pattern.search(content):
-        return pattern.sub(replacement, content, count=1)
+        return pattern.sub(lambda match: replacement, content, count=1)
 
     stripped = content.rstrip() + "\n\n"
     return stripped + replacement + "\n"
@@ -148,8 +159,8 @@ def sync_project_dockerfile_proxy(project_path: Path, proxy_url: Optional[str]) 
         if updated != content:
             dockerfile.write_text(updated, encoding="utf-8")
             return True
-    except Exception:
-        pass
+    except OSError as exc:
+        raise RuntimeError(f"同步 {dockerfile} 失败: {exc}") from exc
     return False
 
 
@@ -180,14 +191,16 @@ $updated = preg_replace($p, $block, $c, -1, $count);
 if (!$count) {{
     $updated = rtrim($c) . PHP_EOL . PHP_EOL . $block . PHP_EOL;
 }}
-file_put_contents($f, $updated);
+if (file_put_contents($f, $updated) === false) {{ exit(1); }}
 PHP
-php /tmp/phpbox-sync-proxy.php
+php /tmp/phpbox-sync-proxy.php || exit $?
 rm -f /tmp/phpbox-sync-proxy.php"""
         result = docker.exec_command("php", ["sh", "-lc", cmd])
-        return result.success
-    except Exception:
-        return False
+        if not result.success:
+            raise RuntimeError(result.error)
+        return True
+    except Exception as exc:
+        raise RuntimeError(f"同步 {project_path.name} 容器代理失败: {exc}") from exc
 
 
 def sync_all_projects_proxy(proxy_url: Optional[str]) -> dict:

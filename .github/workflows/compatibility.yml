@@ -1,0 +1,55 @@
+name: Compatibility
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.8', '3.14']
+        backend: [offscreen, xcb, wayland]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1 libgl1 libdbus-1-3 libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 xvfb xauth weston php-cli
+          python -m pip install -r requirements.txt
+      - name: Regression tests and CLI
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m unittest discover -s tests -v
+          python main.py -h
+          bash -n build.sh install.sh docker-build.sh
+      - name: GUI startup
+        env:
+          QT_QPA_PLATFORM: ${{ matrix.backend }}
+        run: |
+          if [ "$QT_QPA_PLATFORM" = xcb ]; then
+            xvfb-run -a python -m tests.smoke_gui
+          elif [ "$QT_QPA_PLATFORM" = wayland ]; then
+            export XDG_RUNTIME_DIR=$(mktemp -d)
+            chmod 700 "$XDG_RUNTIME_DIR"
+            export WAYLAND_DISPLAY=wayland-test
+            weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 > /tmp/phpbox-weston.log 2>&1 &
+            weston_pid=$!
+            trap 'kill "$weston_pid" || true' EXIT
+            for attempt in {1..50}; do
+              [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ] && break
+              sleep 0.1
+            done
+            python -m tests.smoke_gui
+          else
+            python -m tests.smoke_gui
+          fi

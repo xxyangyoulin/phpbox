@@ -11,6 +11,7 @@ from qfluentwidgets import (
     StrongBodyLabel, FluentIcon as FIF, InfoBar, InfoBarPosition
 )
 
+from ui.worker import OperationWorker
 from core.docker import DockerManager
 from ui.styles import FluentDialog
 
@@ -199,10 +200,10 @@ class PhpConfigDialog(FluentDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
-        save_btn = PrimaryPushButton(FIF.SAVE, "保存并重启 PHP")
-        save_btn.clicked.connect(self.save_config)
-        save_btn.setDefault(True)
-        btn_layout.addWidget(save_btn)
+        self.save_btn = PrimaryPushButton(FIF.SAVE, "保存并重启 PHP")
+        self.save_btn.clicked.connect(self.save_config)
+        self.save_btn.setDefault(True)
+        btn_layout.addWidget(self.save_btn)
 
         layout.addLayout(btn_layout)
 
@@ -272,19 +273,37 @@ class PhpConfigDialog(FluentDialog):
             value = self.inputs[key].text().strip()
             if not value:
                 return False, f"{CONFIG_LABELS[key]} 不能为空"
-            if not size_pattern.match(value):
+            if key == "memory_limit" and value == "-1":
+                continue
+            if not size_pattern.fullmatch(value):
                 return False, f"{CONFIG_LABELS[key]} 格式无效，应为数字或数字+单位(如 256M, 1G)"
 
         # 验证 post_max_size >= upload_max_filesize
         upload_size = self._parse_size(self.inputs["upload_max_filesize"].text().strip())
         post_size = self._parse_size(self.inputs["post_max_size"].text().strip())
-        if post_size < upload_size:
+        if post_size != 0 and post_size < upload_size:
             return False, "POST 大小应大于或等于上传文件大小"
 
         # 验证 error_reporting 格式（基本验证）
         error_rep = self.inputs["error_reporting"].text().strip()
-        if error_rep and not re.match(r'^[E_\d&|~\s\(\)]+$', error_rep):
-            return False, "错误报告格式无效，应为 E_ 常量表达式"
+        constants = {"E_ERROR", "E_WARNING", "E_PARSE", "E_NOTICE", "E_CORE_ERROR", "E_CORE_WARNING",
+                     "E_COMPILE_ERROR", "E_COMPILE_WARNING", "E_USER_ERROR", "E_USER_WARNING", "E_USER_NOTICE",
+                     "E_STRICT", "E_RECOVERABLE_ERROR", "E_DEPRECATED", "E_USER_DEPRECATED", "E_ALL"}
+        import ast
+        try:
+            tree = ast.parse(error_rep, mode="eval")
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name):
+                    if node.id not in constants:
+                        raise ValueError()
+                elif isinstance(node, ast.Constant):
+                    if type(node.value) is not int or node.value < 0:
+                        raise ValueError()
+                elif not isinstance(node, (ast.Expression, ast.Load, ast.BinOp, ast.UnaryOp,
+                                          ast.BitAnd, ast.BitOr, ast.BitXor, ast.Invert)):
+                    raise ValueError()
+        except (SyntaxError, ValueError):
+            return False, "错误报告格式无效，应为 E_ 常量表达式或非负整数"
 
         return True, ""
 
@@ -366,7 +385,18 @@ class PhpConfigDialog(FluentDialog):
         php_ini.write_text(content)
 
         # 重启 PHP 服务
-        result = self.docker.restart_service("php")
+        self.save_btn.setEnabled(False)
+        self.operation_worker = OperationWorker(lambda: self.docker.restart_service("php"))
+        self.operation_worker.succeeded.connect(self._on_restarted)
+        self.operation_worker.failed.connect(self._on_restart_failed)
+        self.operation_worker.start()
+
+    def _on_restart_failed(self, message):
+        self.save_btn.setEnabled(True)
+        InfoBar.warning(title="配置已保存，但重启失败", content=message, parent=self)
+
+    def _on_restarted(self, result):
+        self.save_btn.setEnabled(True)
         if result.success:
             InfoBar.success(
                 title="成功",

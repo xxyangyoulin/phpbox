@@ -1,6 +1,6 @@
 """全局定时任务中心"""
-import os
-import subprocess
+import threading
+import uuid
 from typing import List, Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -15,122 +15,102 @@ from qfluentwidgets import (
     StrongBodyLabel, TextEdit, ToolButton
 )
 
+from core.process import run_process
+from ui.worker import OperationWorker, register_worker
 from core.docker import DockerManager
 from core.project import Project
 from core.tasks import PRESET_SCHEDULES, TaskDefinition, TaskManager, now_iso
-from core.settings import Settings
 from ui.dialogs.build_progress import BuildProgressDialog
 from ui.styles import FluentDialog, themed_color
 
 
 class TaskRuntimeWorker(QThread):
-    """后台执行 cron 运行时初始化/立即执行，避免阻塞 UI"""
-
-    task_finished = pyqtSignal(str, bool, str, str)  # action, success, message, project_name
+    task_finished = pyqtSignal(str, bool, str, str)
     build_required = pyqtSignal(str)
     log_line = pyqtSignal(str)
 
-    def __init__(self, projects: List[Project], project_name: str,
-                 action: str, task_id: str = "", build_if_needed: bool = False):
+    def __init__(self, projects, project_name, action, task_id="", build_if_needed=False,
+                 task=None, original_project_name=None):
         super().__init__()
+        register_worker(self)
         self.projects = projects
         self.project_name = project_name
         self.action = action
         self.task_id = task_id
         self.build_if_needed = build_if_needed
-        self.process = None
+        self.task = task
+        self.original_project_name = original_project_name
+        self.cancel_event = threading.Event()
+        self.run_id = uuid.uuid4().hex
+
+    def _command(self, docker, args):
+        if self.cancel_event.is_set():
+            raise InterruptedError("操作已取消")
+        command = docker.get_compose_command()
+        if not command:
+            raise RuntimeError("未检测到 Docker Compose")
+        result = run_process(command + args, cwd=str(docker.project_path),
+                             cancel=self.cancel_event, on_output=self.log_line.emit, timeout=3600)
+        if result.returncode:
+            raise RuntimeError(result.stdout[-2000:] or "Docker 命令执行失败")
+        return result.stdout
+
+    def _sync_existing(self, docker):
+        if not docker.has_service("cron"):
+            return
+        running = self._command(docker, ["ps", "--status", "running", "--format", "{{.Service}}", "cron"])
+        if "cron" in running.splitlines():
+            self._command(docker, ["exec", "-T", "cron", "crontab", "/var/www/html/.phpbox/tasks/generated.cron"])
 
     def run(self):
         manager = TaskManager(self.projects)
         project = manager.get_project(self.project_name)
-        if not project:
-            self.task_finished.emit(self.action, False, "项目不存在", self.project_name)
-            return
-
-        changes = manager.ensure_project_runtime(project)
-        docker = DockerManager(project.path)
-        if not docker.has_service("cron"):
-            self.task_finished.emit(self.action, False, "cron 服务未写入 docker-compose.yml", self.project_name)
-            return
-
-        proxy = Settings().get_proxy()
-        build = self.build_if_needed or changes["dockerfile_changed"] or changes["compose_changed"]
-        if build:
-            self.build_required.emit(project.name)
-            start_ok, start_message = self._stream_start_cron(docker, proxy)
-            if not start_ok:
-                self.task_finished.emit(self.action, False, start_message, self.project_name)
-                return
-        else:
-            start_result = docker.start_service("cron", build=False, proxy=proxy)
-            if not start_result.success:
-                self.task_finished.emit(self.action, False, start_result.error, self.project_name)
-                return
-
-        self.log_line.emit("=== 应用 crontab 配置 ===")
-        apply_result = docker.apply_project_cron_file("/var/www/html/.phpbox/tasks/generated.cron")
-        if not apply_result.success:
-            self.task_finished.emit(self.action, False, apply_result.error, self.project_name)
-            return
-
-        if self.action == "run_now":
-            self.log_line.emit("=== 立即执行任务 ===")
-            run_result = docker.run_task_now(self.task_id)
-            if not run_result.success:
-                self.task_finished.emit(self.action, False, run_result.error, self.project_name)
-                return
-
-        self.task_finished.emit(self.action, True, "", self.project_name)
-
-    def _stream_start_cron(self, docker: DockerManager, proxy: Optional[str]) -> tuple:
-        compose_cmd = docker.get_compose_command()
-        if not compose_cmd:
-            return False, "未检测到 docker compose 或 docker-compose"
-
-        cmd = compose_cmd + ["up", "-d", "--build", "cron"]
-        env = os.environ.copy()
-        if proxy:
-            env["HTTP_PROXY"] = proxy
-            env["HTTPS_PROXY"] = proxy
-            env["http_proxy"] = proxy
-            env["https_proxy"] = proxy
-            self.log_line.emit(f"使用代理: {proxy}")
-        self.log_line.emit("=== 开始构建并启动 cron 服务 ===")
-
+        docker = None
         try:
-            self.process = subprocess.Popen(
-                cmd,
-                cwd=str(docker.project_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env
-            )
-
-            for line in self.process.stdout:
-                stripped = line.rstrip()
-                if stripped:
-                    self.log_line.emit(stripped)
-
-            self.process.wait()
-            if self.process.returncode == 0:
-                self.log_line.emit("=== cron 服务构建完成 ===")
-                return True, ""
-
-            return False, "cron 服务构建失败，请查看日志"
+            if self.cancel_event.is_set():
+                raise InterruptedError("操作已取消")
+            if not project:
+                raise ValueError("项目不存在")
+            if self.task is not None:
+                manager.save_task(self.task, self.original_project_name)
+            elif self.action == "delete":
+                manager.delete_task(self.task_id)
+            elif self.action in {"enable", "disable"}:
+                manager.set_task_enabled(self.task_id, self.action == "enable")
+            if self.original_project_name and self.original_project_name != project.name:
+                source = manager.get_project(self.original_project_name)
+                self._sync_existing(DockerManager(source.path))
+            docker = DockerManager(project.path)
+            enabled = self.action in {"enable", "run_now"} or (self.task is not None and self.task.enabled)
+            if not enabled:
+                self._sync_existing(docker)
+            else:
+                changes = manager.ensure_project_runtime(project)
+                args = ["up", "-d"]
+                if self.build_if_needed or any(changes.values()):
+                    args.append("--build")
+                    self.build_required.emit(project.name)
+                self._command(docker, args + ["cron"])
+                self._command(docker, ["exec", "-T", "cron", "crontab", "/var/www/html/.phpbox/tasks/generated.cron"])
+                if self.action == "run_now":
+                    self._command(docker, ["exec", "-T", "cron", "setsid",
+                                          "/var/www/html/.phpbox/tasks/run_task.sh", self.task_id, "--manual", self.run_id])
+            self.task_finished.emit(self.action, True, "", project.name)
         except Exception as exc:
-            return False, str(exc)
-        finally:
-            self.process = None
+            if self.action == "run_now" and docker is not None and isinstance(exc, (InterruptedError, TimeoutError)):
+                state = f"/var/www/html/.phpbox/tasks/state/{self.run_id}"
+                try:
+                    result = run_process(docker.get_compose_command() + ["exec", "-T", "cron", "sh", "-c",
+                        'touch "$1.cancel"; if [ -f "$1.pid" ]; then /bin/kill -TERM -- "-$(cat "$1.pid")"; fi',
+                        "sh", state], cwd=str(project.path), timeout=15)
+                    if result.returncode:
+                        raise RuntimeError(result.stdout)
+                except Exception as cleanup_error:
+                    exc = RuntimeError(f"{exc}；终止容器内任务失败：{cleanup_error}")
+            self.task_finished.emit(self.action, False, str(exc), self.project_name)
 
     def stop(self):
-        if self.process:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+        self.cancel_event.set()
 
 
 class TaskEditorDialog(FluentDialog):
@@ -383,8 +363,30 @@ class TaskCenterPage(QWidget):
         self.refresh_tasks()
 
     def refresh_tasks(self):
-        self.task_manager.cleanup_old_logs()
-        rows = self.task_manager.get_task_rows()
+        if getattr(self, "_refreshing", False):
+            self._refresh_again = True
+            return
+        self._refreshing = True
+        manager = self.task_manager
+        def collect():
+            manager.cleanup_old_logs()
+            return manager, manager.get_task_rows()
+        self.refresh_worker = OperationWorker(collect)
+        self.refresh_worker.succeeded.connect(self._on_tasks_loaded)
+        self.refresh_worker.failed.connect(self._on_tasks_failed)
+        self.refresh_worker.start()
+
+    def _on_tasks_failed(self, message):
+        self._refreshing = False
+        self._notify("刷新失败", message, "warning")
+
+    def _on_tasks_loaded(self, result):
+        self._refreshing = False
+        manager, rows = result
+        if getattr(self, "_refresh_again", False) or manager is not self.task_manager:
+            self._refresh_again = False
+            self.refresh_tasks()
+            return
         self.table.setRowCount(len(rows))
         enabled_count = 0
 
@@ -398,7 +400,7 @@ class TaskCenterPage(QWidget):
                 task.project_name,
                 task.cron_expression if task.schedule_type == "自定义" else task.schedule_type,
                 task.user,
-                "已启用" if task.enabled else "已停止",
+                "允许调度" if task.enabled else "已禁用调度",
                 self.task_manager.format_last_run(state),
                 row["recent_result"],
             ]
@@ -417,7 +419,7 @@ class TaskCenterPage(QWidget):
         layout.setSpacing(4)
 
         start_stop_btn = ToolButton(FIF.PLAY if not task.enabled else FIF.PAUSE)
-        start_stop_btn.setToolTip("启动任务" if not task.enabled else "停止任务")
+        start_stop_btn.setToolTip("启用调度" if not task.enabled else "停止后续调度（不终止当前执行）")
         start_stop_btn.clicked.connect(lambda: self.toggle_task(task.id, not task.enabled))
         layout.addWidget(start_stop_btn)
 
@@ -460,59 +462,25 @@ class TaskCenterPage(QWidget):
             self._save_task(dialog.get_task(), dialog.original_project_name)
 
     def _save_task(self, task: TaskDefinition, original_project_name: Optional[str]):
-        try:
-            self.task_manager.save_task(task, original_project_name=original_project_name)
-        except ValueError as exc:
-            self._notify("保存失败", str(exc), "error")
+        valid, message = self.task_manager.validate_task(task)
+        if not valid:
+            self._notify("保存失败", message, "error")
             return
-
-        if task.enabled:
-            if not self._ensure_docker_ready():
-                self._notify("保存完成", f"任务 {task.name} 已保存，但 Docker 未就绪", "warning")
-                self.refresh_tasks()
-                return
-            self._start_runtime_worker("save", task.project_name, task.name, build_if_needed=False)
-        else:
-            project = self.task_manager.get_project(task.project_name)
-            docker = DockerManager(project.path)
-            if docker.has_service("cron") and docker.is_service_running("cron"):
-                result = docker.apply_project_cron_file("/var/www/html/.phpbox/tasks/generated.cron")
-                if not result.success:
-                    self._notify("保存完成", f"任务已保存，但停用未生效：{result.error}", "warning")
-                    self.refresh_tasks()
-                    return
-            self._notify("保存完成", f"任务 {task.name} 已保存", "success")
-            self.refresh_tasks()
+        self._start_runtime_worker("save", task.project_name, task.name,
+                                   task=task, original_project_name=original_project_name)
 
     def delete_task(self, task_id: str):
         task = self.task_manager.get_task(task_id)
         if not task:
             return
-        box = MessageBox("确认删除", f"确定要删除任务“{task.name}”吗？", self)
-        if not box.exec():
-            return
-        self.task_manager.delete_task(task_id)
-        self.refresh_tasks()
-        self._notify("删除完成", f"任务 {task.name} 已删除", "success")
+        box = MessageBox("确认删除", f"确定删除任务“{task.name}”吗？正在执行的任务不会被终止。", self)
+        if box.exec():
+            self._start_runtime_worker("delete", task.project_name, task.name, task_id=task_id)
 
     def toggle_task(self, task_id: str, enabled: bool):
         task = self.task_manager.get_task(task_id)
-        if not task:
-            return
-        self.task_manager.set_task_enabled(task_id, enabled)
-        if enabled:
-            if not self._ensure_docker_ready():
-                self._notify("启动失败", "Docker 未就绪，任务已保存为启用状态", "warning")
-                return
-            self._start_runtime_worker("enable", task.project_name, task.name, build_if_needed=False)
-        else:
-            project = self.task_manager.get_project(task.project_name)
-            if project and self._ensure_docker_ready():
-                docker = DockerManager(project.path)
-                if docker.has_service("cron") and docker.is_service_running("cron"):
-                    docker.apply_project_cron_file("/var/www/html/.phpbox/tasks/generated.cron")
-            self._notify("停止完成", f"任务 {task.name} 已停用", "success")
-            self.refresh_tasks()
+        if task:
+            self._start_runtime_worker("enable" if enabled else "disable", task.project_name, task.name, task_id=task_id)
 
     def run_task_now(self, task_id: str):
         task = self.task_manager.get_task(task_id)
@@ -530,11 +498,18 @@ class TaskCenterPage(QWidget):
         project = self.task_manager.get_project(task.project_name)
         if not project:
             return
-        content = self.task_manager.read_recent_task_logs(project, task_id)
-        TaskLogDialog(f"任务日志 - {task.name}", content, self).exec()
+        manager = self.task_manager
+        self.log_worker = OperationWorker(lambda: (task.name, manager.read_recent_task_logs(project, task_id)))
+        self.log_worker.succeeded.connect(self._on_task_logs_loaded)
+        self.log_worker.failed.connect(self._on_tasks_failed)
+        self.log_worker.start()
+
+    def _on_task_logs_loaded(self, result):
+        name, content = result
+        TaskLogDialog(f"任务日志 - {name}", content, self).show()
 
     def _start_runtime_worker(self, action: str, project_name: str, task_name: str,
-                              task_id: str = "", build_if_needed: bool = False):
+                              task_id: str = "", build_if_needed: bool = False, task=None, original_project_name=None):
         if self.runtime_worker and self.runtime_worker.isRunning():
             self._notify("请稍候", "当前已有任务运行时操作正在执行", "warning")
             return
@@ -547,7 +522,7 @@ class TaskCenterPage(QWidget):
             project_name,
             action=action,
             task_id=task_id,
-            build_if_needed=build_if_needed
+            build_if_needed=build_if_needed, task=task, original_project_name=original_project_name
         )
         self.runtime_worker.build_required.connect(self._on_build_required)
         self.runtime_worker.log_line.connect(self._on_runtime_log_line)
@@ -583,20 +558,11 @@ class TaskCenterPage(QWidget):
 
         task_name = self._pending_task_name or "任务"
         if success:
-            if action == "run_now":
-                self._notify("执行完成", f"任务 {task_name} 已执行", "success")
-            elif action == "enable":
-                self._notify("启动完成", f"任务 {task_name} 已启用", "success")
-            else:
-                self._notify("保存完成", f"任务 {task_name} 已保存并启用", "success")
-            return
-
-        if action == "run_now":
-            self._notify("执行失败", message, "error")
-        elif action == "enable":
-            self._notify("启动失败", message, "error")
+            messages = {"run_now": "执行结束", "enable": "调度已启用", "disable": "后续调度已停止，当前执行不受影响",
+                        "delete": "任务已删除，当前执行不受影响", "save": "配置已保存并同步"}
+            self._notify("操作完成", f"{task_name}：{messages[action]}")
         else:
-            self._notify("保存完成", f"任务已保存，但运行时初始化失败：{message}", "warning")
+            self._notify("操作未完成", f"{message}。请刷新核查；本地配置可能已保存。", "warning")
 
     def _cancel_runtime_worker(self):
         if self.runtime_worker and self.runtime_worker.isRunning():
@@ -605,7 +571,8 @@ class TaskCenterPage(QWidget):
     def closeEvent(self, event):
         if self.runtime_worker and self.runtime_worker.isRunning():
             self.runtime_worker.stop()
-            self.runtime_worker.wait(3000)
+            event.ignore()
+            return
         if self.build_progress_dialog:
             self.build_progress_dialog.close()
         super().closeEvent(event)

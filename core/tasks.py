@@ -150,20 +150,22 @@ class TaskManager:
             return []
         try:
             data = json.loads(tasks_file.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                return []
-            tasks = [TaskDefinition.from_dict(item) for item in data if isinstance(item, dict)]
+            if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+                raise ValueError("任务配置必须是对象列表")
+            tasks = [TaskDefinition.from_dict(item) for item in data]
+            if any(not re.fullmatch(r"[a-zA-Z0-9_-]+", task.id) for task in tasks):
+                raise ValueError("任务标识格式无效")
             return [task for task in tasks if task.project_name == project.name]
-        except Exception:
-            return []
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"无法读取 {tasks_file}: {exc}") from exc
 
     def save_project_tasks(self, project: Project, tasks: List[TaskDefinition]):
         self.ensure_project_task_dirs(project)
         payload = [task.to_dict() for task in tasks]
-        self.get_tasks_file(project).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8"
-        )
+        target = self.get_tasks_file(project)
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(target)
 
     def load_all_tasks(self) -> List[TaskDefinition]:
         tasks: List[TaskDefinition] = []
@@ -203,7 +205,10 @@ class TaskManager:
         chunks: List[str] = []
         for log_file in self.get_task_log_files(project, task_id)[:max_files]:
             try:
-                chunks.append(f"===== {log_file.name} =====\n{log_file.read_text(encoding='utf-8')}")
+                with log_file.open("rb") as stream:
+                    stream.seek(max(0, log_file.stat().st_size - 65536))
+                    content = stream.read(65536).decode("utf-8", errors="replace")
+                chunks.append(f"===== {log_file.name}（末尾最多 64 KiB）=====\n{content}")
             except Exception:
                 continue
         return "\n\n".join(chunks).strip()
@@ -213,6 +218,10 @@ class TaskManager:
             return False, "请选择所属项目"
         if task.project_name not in self._project_map:
             return False, f"项目 {task.project_name} 不存在"
+        if task.id and not re.fullmatch(r"[a-zA-Z0-9_-]+", task.id):
+            return False, "任务标识格式无效"
+        if "\n" in task.name or "\r" in task.name:
+            return False, "任务名称不能包含换行"
         if not task.name.strip():
             return False, "任务名称不能为空"
         if not task.user.strip():
@@ -233,8 +242,30 @@ class TaskManager:
 
     @staticmethod
     def is_valid_cron_expression(expression: str) -> bool:
-        parts = re.split(r"\s+", expression.strip())
-        return len(parts) == 5 and all(part for part in parts)
+        if "\n" in expression or "\r" in expression:
+            return False
+        parts = expression.split()
+        if len(parts) != 5:
+            return False
+        names = [{}, {}, {}, dict(zip("jan feb mar apr may jun jul aug sep oct nov dec".split(), range(1, 13))),
+                 dict(zip("sun mon tue wed thu fri sat".split(), range(7)))]
+        for field, (low, high), aliases in zip(parts, [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)], names):
+            for word, number in aliases.items():
+                field = re.sub(word, str(number), field, flags=re.IGNORECASE)
+            for item in field.split(","):
+                match = re.fullmatch(r"(\*|[0-9]+(?:-[0-9]+)?)(?:/([0-9]+))?", item)
+                if not match:
+                    return False
+                base, step = match.groups()
+                if step is not None and not 1 <= int(step) <= high - low + 1:
+                    return False
+                if base != "*":
+                    values = [int(value) for value in base.split("-")]
+                    if not all(low <= value <= high for value in values):
+                        return False
+                    if len(values) == 2 and values[0] > values[1]:
+                        return False
+        return True
 
     @staticmethod
     def shell_quote(value: str) -> str:
@@ -245,12 +276,20 @@ class TaskManager:
 set -eu
 
 TASK_ID="$1"
+MODE="${2:-scheduled}"
+RUN_ID="${3:-scheduled-$$}"
 TASK_ROOT="/var/www/html/.phpbox/tasks"
 TASK_FILE="$TASK_ROOT/tasks.json"
 LOG_ROOT="$TASK_ROOT/logs"
 STATE_ROOT="$TASK_ROOT/state"
 
 mkdir -p "$LOG_ROOT" "$STATE_ROOT"
+case "$TASK_ID:$RUN_ID" in *[!a-zA-Z0-9_:-]*) exit 1 ;; esac
+exec 9>"$STATE_ROOT/$TASK_ID.lock"
+flock -n 9 || { echo "任务已在执行，本次跳过"; exit 0; }
+echo "$$" > "$STATE_ROOT/$RUN_ID.pid"
+trap 'rm -f "$STATE_ROOT/$RUN_ID.pid" "$STATE_ROOT/$RUN_ID.cancel"' EXIT
+if [ -f "$STATE_ROOT/$RUN_ID.cancel" ]; then exit 130; fi
 
 clean_old_logs() {
     find "$LOG_ROOT" -type f -name '*.log' -mtime +3 -delete 2>/dev/null || true
@@ -273,13 +312,14 @@ foreach ($data as $item) {
         if ($user === "") {
             $user = "user";
         }
-        $command = trim(str_replace(["\\r", "\\n"], [" ", " "], (string)($item["command"] ?? "")));
+        if ($argv[3] !== "--manual" && empty($item["enabled"])) { exit(1); }
+        $command = (string)($item["command"] ?? "");
         echo $user, PHP_EOL, $command, PHP_EOL;
         exit(0);
     }
 }
 exit(1);
-' "$TASK_FILE" "$TASK_ID"
+' "$TASK_FILE" "$TASK_ID" "$MODE"
 }
 
 write_state() {
@@ -298,7 +338,9 @@ $payload = [
     "last_run_at" => $argv[6],
     "last_finished_at" => $argv[7],
 ];
-file_put_contents($stateFile, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . PHP_EOL);
+$tmp = $stateFile . "." . getmypid() . ".tmp";
+file_put_contents($tmp, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . PHP_EOL);
+rename($tmp, $stateFile);
 ' "$STATE_ROOT/$TASK_ID.json" "$TASK_ID" "$status" "$exit_code" "$log_file" "$started_at" "$finished_at"
 }
 
@@ -314,11 +356,12 @@ TASK_COMMAND="$(printf '%s\n' "$TASK_META" | sed -n '2,$p')"
 TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
 TASK_LOG_DIR="$LOG_ROOT/$TASK_ID"
 mkdir -p "$TASK_LOG_DIR"
-LOG_FILE="$TASK_LOG_DIR/$TIMESTAMP.log"
+chown --reference="$TASK_ROOT" "$TASK_LOG_DIR" "$LOG_ROOT" "$STATE_ROOT"
+LOG_FILE="$(mktemp "$TASK_LOG_DIR/$TIMESTAMP-XXXXXX.log")"
 STARTED_AT="$(date '+%Y-%m-%dT%H:%M:%S%z')"
 
 set +e
-su -s /bin/sh "$TASK_USER" -c "cd /var/www/html && $TASK_COMMAND" >"$LOG_FILE" 2>&1
+su -s /bin/sh "$TASK_USER" --session-command "cd /var/www/html && $TASK_COMMAND" 9>&- >"$LOG_FILE" 2>&1
 EXIT_CODE="$?"
 set -e
 
@@ -435,7 +478,10 @@ exit "$EXIT_CODE"
         self.ensure_project_task_dirs(project)
         self.ensure_runner_script(project)
         content = self.generate_cron_content(project, tasks)
-        self.get_generated_cron_file(project).write_text(content, encoding="utf-8")
+        target = self.get_generated_cron_file(project)
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(target)
 
     def save_task(self, task: TaskDefinition, original_project_name: Optional[str] = None):
         valid, message = self.validate_task(task)
@@ -456,24 +502,29 @@ exit "$EXIT_CODE"
         source_project_name = original_project_name or task.project_name
         source_project = self.get_project(source_project_name)
 
-        if source_project:
-            source_tasks = self.load_project_tasks(source_project)
-            source_tasks = [item for item in source_tasks if item.id != task.id]
-            self.save_project_tasks(source_project, source_tasks)
-            self.write_generated_cron(source_project, source_tasks)
-
-        target_tasks = self.load_project_tasks(target_project)
-        replaced = False
-        for index, item in enumerate(target_tasks):
-            if item.id == task.id:
-                target_tasks[index] = task
-                replaced = True
-                break
-        if not replaced:
+        affected = [target_project]
+        if source_project and source_project != target_project:
+            affected.append(source_project)
+        snapshots = {}
+        for project in affected:
+            for file in [self.get_tasks_file(project), self.get_generated_cron_file(project)]:
+                snapshots[file] = file.read_bytes() if file.exists() else None
+        try:
+            target_tasks = [item for item in self.load_project_tasks(target_project) if item.id != task.id]
             target_tasks.append(task)
-
-        self.save_project_tasks(target_project, target_tasks)
-        self.write_generated_cron(target_project, target_tasks)
+            self.save_project_tasks(target_project, target_tasks)
+            self.write_generated_cron(target_project, target_tasks)
+            if source_project and source_project != target_project:
+                source_tasks = [item for item in self.load_project_tasks(source_project) if item.id != task.id]
+                self.save_project_tasks(source_project, source_tasks)
+                self.write_generated_cron(source_project, source_tasks)
+        except Exception:
+            for file, content in snapshots.items():
+                if content is None:
+                    file.unlink(missing_ok=True)
+                else:
+                    file.write_bytes(content)
+            raise
 
     def delete_task(self, task_id: str):
         for project in self.projects:
@@ -483,14 +534,6 @@ exit "$EXIT_CODE"
                 self.save_project_tasks(project, tasks)
                 self.write_generated_cron(project, tasks)
 
-                state_file = self.get_state_dir(project) / f"{task_id}.json"
-                state_file.unlink(missing_ok=True)
-                log_dir = self.get_logs_dir(project) / task_id
-                if log_dir.exists():
-                    for item in log_dir.iterdir():
-                        if item.is_file():
-                            item.unlink(missing_ok=True)
-                    log_dir.rmdir()
                 return
 
     def set_task_enabled(self, task_id: str, enabled: bool):

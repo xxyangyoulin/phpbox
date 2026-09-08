@@ -9,8 +9,9 @@ from qfluentwidgets import (
     InfoBar, InfoBarPosition, MessageBox
 )
 
+from ui.worker import OperationWorker
 from core.settings import Settings
-from core.proxy import detect_system_proxy, sync_all_projects_proxy
+from core.proxy import detect_system_proxy, sync_all_projects_proxy, validate_proxy_url
 from ui.dialogs.environment_diagnostics import EnvironmentDiagnosticsDialog
 from ui.styles import FluentDialog, apply_theme
 
@@ -124,10 +125,10 @@ class SettingsDialog(FluentDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
-        save_btn = PrimaryPushButton(FIF.SAVE, "保存")
-        save_btn.clicked.connect(self.save_settings)
-        save_btn.setDefault(True)
-        btn_layout.addWidget(save_btn)
+        self.save_btn = PrimaryPushButton(FIF.SAVE, "保存")
+        self.save_btn.clicked.connect(self.save_settings)
+        self.save_btn.setDefault(True)
+        btn_layout.addWidget(self.save_btn)
 
         layout.addLayout(btn_layout)
 
@@ -202,13 +203,19 @@ class SettingsDialog(FluentDialog):
                     parent=self
                 )
                 return
-            if not port.isdigit():
+            if not port.isdigit() or not 1 <= int(port) <= 65535:
                 InfoBar.error(
                     title="验证失败",
-                    content="端口必须是数字",
+                    content="端口必须是 1–65535 之间的整数",
                     orient=Qt.Orientation.Horizontal,
                     parent=self
                 )
+                return
+
+            try:
+                validate_proxy_url(f"http://{host}:{port}")
+            except ValueError as exc:
+                InfoBar.error(title="代理格式无效", content=str(exc), parent=self)
                 return
 
         # 保存代理设置
@@ -218,7 +225,7 @@ class SettingsDialog(FluentDialog):
             self.proxy_enabled_cb.isChecked()
         )
         current_proxy = self.settings.get_proxy()
-        sync_result = sync_all_projects_proxy(current_proxy)
+
 
         # 保存并立即应用主题
         theme_index = self.theme_combo.currentIndex()
@@ -233,16 +240,20 @@ class SettingsDialog(FluentDialog):
         else:
             apply_theme(app, theme)
 
-        InfoBar.success(
-            title="成功",
-            content=(
-                f"设置已保存，已同步 {sync_result['dockerfiles']} 个项目 Dockerfile，"
-                f"{sync_result['running_containers']} 个运行中容器的 zshrc"
-            ),
-            orient=Qt.Orientation.Horizontal,
-            parent=self.window()
-        )
+        self.save_btn.setEnabled(False)
+        self.operation_worker = OperationWorker(lambda: sync_all_projects_proxy(current_proxy))
+        self.operation_worker.succeeded.connect(self._on_proxy_synced)
+        self.operation_worker.failed.connect(self._on_proxy_sync_failed)
+        self.operation_worker.start()
+
+    def _on_proxy_synced(self, result):
+        self.save_btn.setEnabled(True)
+        InfoBar.success(title="设置已保存", content=f"已同步 {result['dockerfiles']} 个配置和 {result['running_containers']} 个容器", parent=self.window())
         self.accept()
+
+    def _on_proxy_sync_failed(self, message):
+        self.save_btn.setEnabled(True)
+        InfoBar.warning(title="设置已保存，但同步失败", content=message, parent=self)
 
     def reset_settings(self):
         """恢复默认设置"""

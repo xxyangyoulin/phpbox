@@ -1,7 +1,7 @@
 """重建镜像对话框"""
 import html
 import os
-import subprocess
+import threading
 from pathlib import Path
 from typing import List
 
@@ -13,6 +13,8 @@ from qfluentwidgets import (
     IndeterminateProgressRing, PrimaryPushButton, PushButton, TextEdit
 )
 
+from core.process import run_process
+from ui.worker import register_worker
 from core.docker import DockerManager
 from core.proxy import convert_proxy_for_docker
 from core.settings import Settings
@@ -30,8 +32,8 @@ class RebuildImageWorker(QThread):
         self.project_path = project_path
         self.proxy = proxy
         self.logs: List[str] = []
-        self._running = True
-        self.process = None
+        self.cancel_event = threading.Event()
+        register_worker(self, f"{project_path.name} · 重建镜像")
 
     def run(self):
         self.logs = []
@@ -67,34 +69,14 @@ class RebuildImageWorker(QThread):
 
             self.finished.emit(True, "镜像重建完成，容器已重新创建", self.logs)
         except Exception as e:
-            if self._running:
-                self._emit_log(f"错误: {str(e)}")
-                self.finished.emit(False, str(e), self.logs)
+            self._emit_log(str(e))
+            self.finished.emit(False, str(e), self.logs)
 
     def _stream_command(self, cmd: List[str], env: dict, title: str) -> bool:
         self._emit_log(title)
-        self.process = subprocess.Popen(
-            cmd,
-            cwd=str(self.project_path),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=env
-        )
-
-        for line in self.process.stdout:
-            if not self._running:
-                break
-            self._emit_log(line.rstrip())
-
-        self.process.wait()
-        return_code = self.process.returncode
-        self.process = None
-
-        if not self._running:
-            self.finished.emit(False, "重建已取消", self.logs)
-            return False
+        result = run_process(cmd, cwd=str(self.project_path), env=env,
+                             cancel=self.cancel_event, on_output=self._emit_log, timeout=3600)
+        return_code = result.returncode
 
         if return_code != 0:
             self.finished.emit(False, "重建失败", self.logs)
@@ -105,16 +87,11 @@ class RebuildImageWorker(QThread):
 
     def _emit_log(self, line: str):
         self.logs.append(line)
+        self.logs = self.logs[-200:]
         self.progress.emit(line)
 
     def stop(self):
-        self._running = False
-        if self.process:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+        self.cancel_event.set()
 
 
 class RebuildImageDialog(FluentDialog):
@@ -160,6 +137,7 @@ class RebuildImageDialog(FluentDialog):
         layout.addWidget(BodyLabel("重建日志:"))
         self.log_text = TextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.document().setMaximumBlockCount(2000)
         self.log_text.setStyleSheet(f"""
             TextEdit {{
                 background-color: #1e1e1e;
@@ -180,6 +158,9 @@ class RebuildImageDialog(FluentDialog):
         layout.addWidget(self.status_label)
 
         btn_layout = QHBoxLayout()
+        background_btn = PushButton("转到后台")
+        background_btn.clicked.connect(self.hide)
+        btn_layout.addWidget(background_btn)
         btn_layout.addStretch()
 
         self.close_btn = PushButton("关闭")
@@ -212,6 +193,7 @@ class RebuildImageDialog(FluentDialog):
         self.status_label.setStyleSheet("")
         self.status_label.setText("正在重建镜像...")
         self.rebuild_btn.setEnabled(False)
+        self.close_btn.setText("取消操作")
         self.progress.setVisible(True)
 
         proxy = None
@@ -228,6 +210,7 @@ class RebuildImageDialog(FluentDialog):
     def on_finished(self, success: bool, message: str, logs: List[str]):
         self.progress.setVisible(False)
         self.rebuild_btn.setEnabled(True)
+        self.close_btn.setText("关闭")
         self.append_log("")
         if success:
             self.append_log(f"=== {message} ===")
@@ -252,8 +235,8 @@ class RebuildImageDialog(FluentDialog):
             )
 
     def _on_close(self):
-        if self.worker and self.worker.isRunning():
-            self.status_label.setText("正在取消重建...")
-            self.worker.stop()
-            self.worker.wait()
         self.reject()
+
+    def closeEvent(self, event):
+        self.hide()
+        event.ignore()

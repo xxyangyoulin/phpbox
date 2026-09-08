@@ -12,7 +12,10 @@ on:
         default: 'dev'
 
 jobs:
+  compatibility:
+    uses: ./.github/workflows/compatibility.yml
   build:
+    needs: compatibility
     runs-on: ubuntu-22.04
     permissions:
       contents: write   # 允许创建 Release 和上传附件
@@ -54,7 +57,8 @@ jobs:
       - name: 构建二进制（PyInstaller）
         run: |
           rm -rf build/
-          pyinstaller phpbox.spec --noconfirm
+          python -m PyInstaller phpbox.spec --noconfirm
+          ./dist/phpbox/phpbox -h
           echo "二进制大小: $(du -sh dist/phpbox | cut -f1)"
           tar -C dist -czf dist/phpbox-linux-x86_64.tar.gz phpbox
 

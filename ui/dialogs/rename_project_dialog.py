@@ -10,6 +10,7 @@ from qfluentwidgets import (
     InfoBar, ProgressRing
 )
 
+from ui.worker import register_worker
 from core.project import Project, ProjectManager, get_port_usage
 from core.docker import DockerManager
 from ui.styles import FluentDialog
@@ -21,6 +22,7 @@ class RenameWorker(QThread):
 
     def __init__(self, project: Project, new_name: str):
         super().__init__()
+        register_worker(self)
         self.project = project
         self.new_name = new_name
         self.project_manager = ProjectManager()

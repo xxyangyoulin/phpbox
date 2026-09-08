@@ -5,6 +5,7 @@ import subprocess
 import os
 import shutil
 from pathlib import Path
+from core.process import run_process
 from typing import List, Optional, Callable, Tuple
 from dataclasses import dataclass
 
@@ -108,8 +109,9 @@ class DockerManager:
     _compose_checked: bool = False
     _APP_SERVICES = ["php", "nginx"]
 
-    def __init__(self, project_path: Path):
-        self.project_path = project_path
+    def __init__(self, project_path: Path, cancel=None):
+        self.project_path = Path(project_path)
+        self.cancel = cancel
         self._detect_compose()
 
     def _detect_compose(self):
@@ -124,8 +126,8 @@ class DockerManager:
                 capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
-                self._compose_cmd = self._COMPOSE_CMD_NEW
-                self._compose_checked = True
+                DockerManager._compose_cmd = self._COMPOSE_CMD_NEW
+                DockerManager._compose_checked = True
                 return
         except Exception:
             pass
@@ -137,13 +139,13 @@ class DockerManager:
                 capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
-                self._compose_cmd = self._COMPOSE_CMD_OLD
-                self._compose_checked = True
+                DockerManager._compose_cmd = self._COMPOSE_CMD_OLD
+                DockerManager._compose_checked = True
                 return
         except Exception:
             pass
 
-        self._compose_checked = True  # 标记已检测过
+        DockerManager._compose_checked = True
 
     def get_compose_command(self) -> List[str]:
         """获取当前可用的 compose 命令前缀"""
@@ -172,14 +174,8 @@ class DockerManager:
             if env:
                 run_env.update(env)
 
-            result = subprocess.run(
-                self._compose_cmd + args,
-                cwd=str(self.project_path),
-                capture_output=capture,
-                text=True,
-                timeout=300,
-                env=run_env
-            )
+            result = run_process(self._compose_cmd + args, cwd=str(self.project_path),
+                                 env=run_env, cancel=self.cancel, timeout=300)
             if result.returncode == 0:
                 return DockerResult(success=True, output=result.stdout)
             else:
@@ -367,7 +363,7 @@ class DockerManager:
     def exec_command(self, service: str, command: List[str],
                      user: Optional[str] = None) -> DockerResult:
         """在容器中执行命令"""
-        args = ["exec"]
+        args = ["exec", "-T"]
         if user:
             args.extend(["-u", user])
         args.append(service)
@@ -437,14 +433,14 @@ class DockerManager:
         """将项目内生成的 cron 文件装载到 cron 服务"""
         return self.exec_command(
             "cron",
-            ["sh", "-lc", f"crontab {cron_file_path}"]
+            ["crontab", cron_file_path]
         )
 
     def run_task_now(self, task_id: str) -> DockerResult:
         """立即执行任务"""
         return self.exec_command(
             "cron",
-            ["sh", "-lc", f"/var/www/html/.phpbox/tasks/run_task.sh {task_id}"]
+            ["/var/www/html/.phpbox/tasks/run_task.sh", task_id, "--manual"]
         )
 
     def get_image_name(self) -> str:

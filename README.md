@@ -25,13 +25,23 @@
 - Linux
 - Docker
 - `docker compose` 或 `docker-compose`
-- Python `3.8+`
+- Python `3.8–3.14`
 
 如果你主要使用 CLI，也建议先确保：
 
 ```bash
 docker info
 docker compose version
+```
+
+发布包以 Linux x86_64、Ubuntu 22.04 / Debian 12 或更新系统为兼容基线。其他发行版建议在目标系统构建。
+Python 3.8/3.9 使用固定的 Qt 6.7 依赖，Python 3.10–3.14 使用固定的 Qt 6.10 依赖；依赖版本见 `requirements.txt`。
+CI 覆盖 Python 3.8、3.14 以及 offscreen、X11、Wayland 启动，发布前必须通过。
+
+运行回归测试：
+
+```bash
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
 ```
 
 ## 安装与运行
@@ -82,7 +92,6 @@ dist/phpbox/phpbox
 - 选择 PHP 版本
 - 选择并安装 PHP 扩展
 - 可选启用 MySQL / Redis
-- 项目级自定义脚本
 - 修改项目配置
 - 管理 Xdebug
 - 查看项目状态、运行日志和访问地址
@@ -96,17 +105,11 @@ dist/phpbox/phpbox
 5. 如有需要，启用 MySQL / Redis
 6. 创建并启动项目
 
-### 项目脚本
+### 定时任务
 
-项目详情页在“工具与操作”上方提供“项目脚本”模块，用来放置需要反复执行的项目命令。
-
-- 脚本在项目目录执行
-- 支持新增、编辑、删除、执行
-- 默认提供一个“推送当前分支并部署到测试服”脚本模板
-- 支持变量：
-  - `${project_dir}`
-  - `${project_name}`
-  - `${current_branch}`
+停用任务只停止后续调度，不终止已经开始的执行。同一任务运行期间再次触发会跳过，避免重叠执行。
+任务日志查看每次最多读取最近 20 个文件的末尾 64 KiB；日志窗口仅显示有限历史记录。
+项目重命名会保留 Compose 项目标识，以继续使用原数据库卷。
 
 ### 可选服务
 

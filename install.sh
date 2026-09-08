@@ -26,10 +26,42 @@ detect_distro() {
 install_system() {
     echo ">>> 安装 PHP 开发环境管理器..."
 
-    # 安装程序目录
-    sudo rm -rf "$INSTALL_DIR"
-    sudo mkdir -p "$INSTALL_DIR"
-    sudo cp -r "$DIST_DIR/phpbox/." "$INSTALL_DIR/"
+    if [ ! -x "$DIST_DIR/phpbox/phpbox" ] || [ ! -d "$DIST_DIR/phpbox/_internal" ]; then
+        echo "错误: 构建产物不完整，请先运行 ./build.sh --bin"
+        return 1
+    fi
+    "$DIST_DIR/phpbox/phpbox" -h >/dev/null
+    local staging backup activated=false old_moved=false
+    staging=$(sudo mktemp -d /opt/.phpbox-new.XXXXXX)
+    backup=$(sudo mktemp -d /opt/.phpbox-backup.XXXXXX)
+    rollback_install() {
+        set +e
+        if [ "$1" -ne 0 ]; then
+            if [ "$activated" = true ]; then sudo rm -rf "$INSTALL_DIR"; fi
+            if [ "$old_moved" = true ]; then sudo mv "$backup/phpbox" "$INSTALL_DIR"; fi
+        fi
+        sudo rm -rf "$staging" "$backup"
+    }
+    if ! sudo cp -r "$DIST_DIR/phpbox/." "$staging/"; then
+        rollback_install 1
+        return 1
+    fi
+    if ! sudo chmod 755 "$staging"; then
+        rollback_install 1
+        return 1
+    fi
+    if [ -e "$INSTALL_DIR" ]; then
+        if ! sudo mv "$INSTALL_DIR" "$backup/phpbox"; then
+            rollback_install 1
+            return 1
+        fi
+        old_moved=true
+    fi
+    if ! sudo mv "$staging" "$INSTALL_DIR"; then
+        rollback_install 1
+        return 1
+    fi
+    activated=true
 
     # 创建启动脚本
     sudo tee /usr/local/bin/phpbox >/dev/null << EOF
@@ -54,6 +86,7 @@ EOF
     sudo update-desktop-database /usr/share/applications/ 2>/dev/null || true
 
     echo ""
+    sudo rm -rf "$backup"
     echo "=== 安装完成! ==="
     echo "可在应用菜单中找到「PHP 开发环境管理器」"
     echo "或运行: phpbox"

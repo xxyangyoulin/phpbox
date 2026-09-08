@@ -1,8 +1,13 @@
 """日志查看器对话框"""
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, QTimer
 from pathlib import Path
 import subprocess
+import html
+import threading
+from collections import deque
+from core.process import run_process
+from ui.worker import register_worker
 
 from qfluentwidgets import (
     PushButton, ComboBox, SearchLineEdit, TextEdit,
@@ -13,51 +18,35 @@ from ui.styles import FluentDialog, themed_color
 
 
 class LogReaderThread(QThread):
-    """日志读取线程"""
-    line_received = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, project_path: Path, service: str = None):
         super().__init__()
+        register_worker(self)
         self.project_path = project_path
         self.service = service
-        self.process = None
-        self._running = True
+        self.cancel_event = threading.Event()
+        self.chunks = deque(maxlen=64)
 
     def run(self):
-        docker = DockerManager(self.project_path)
-        cmd = docker.get_compose_command() + ["logs", "-f"]
-        if not docker.get_compose_command():
-            self.error_occurred.emit("未检测到 docker compose 或 docker-compose")
-            return
-        if self.service:
-            cmd.append(self.service)
-
-        self.process = subprocess.Popen(
-            cmd,
-            cwd=str(self.project_path),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
-        )
-
         try:
-            for line in self.process.stdout:
-                if not self._running:
-                    break
-                self.line_received.emit(line.rstrip())
-        except Exception as e:
-            self.error_occurred.emit(str(e))
+            command = DockerManager(self.project_path).get_compose_command()
+            if not command:
+                raise RuntimeError("未检测到 Docker Compose")
+            command += ["logs", "-f", "--tail", "200"]
+            if self.service:
+                command.append(self.service)
+            result = run_process(command, cwd=str(self.project_path), cancel=self.cancel_event,
+                                 on_output=lambda text: self.chunks.append(text[-16384:]), timeout=86400)
+            if result.returncode:
+                self.error_occurred.emit(result.stdout[-2000:])
+        except InterruptedError:
+            pass
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
 
     def stop(self):
-        self._running = False
-        if self.process:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+        self.cancel_event.set()
 
 
 class LogViewerDialog(FluentDialog):
@@ -68,6 +57,7 @@ class LogViewerDialog(FluentDialog):
         self.project_path = project_path
         self.project_name = project_name
         self.log_thread = None
+        self._reader_generation = 0
 
         self.setWindowTitle(f"日志查看器 - {project_name}")
         self.setMinimumSize(900, 600)
@@ -83,7 +73,7 @@ class LogViewerDialog(FluentDialog):
         # 服务选择
         toolbar.addWidget(BodyLabel("服务:"))
         self.service_combo = ComboBox()
-        self.service_combo.addItems(["全部", "php", "nginx"])
+        self.service_combo.addItems(["全部", "php", "nginx", "mysql", "redis", "cron"])
         self.service_combo.currentTextChanged.connect(self.change_service)
         toolbar.addWidget(self.service_combo)
 
@@ -104,7 +94,7 @@ class LogViewerDialog(FluentDialog):
         # 清空
         clear_btn = ToolButton(FIF.DELETE)
         clear_btn.clicked.connect(self.clear_logs)
-        clear_btn.setToolTip("清空日志")
+        clear_btn.setToolTip("清空显示（保留日志文件）")
         toolbar.addWidget(clear_btn)
 
         layout.addLayout(toolbar)
@@ -133,39 +123,42 @@ class LogViewerDialog(FluentDialog):
         layout.addLayout(btn_layout)
 
         # 开始读取日志
+        self.log_text.document().setMaximumBlockCount(2000)
+        self.flush_timer = QTimer(self)
+        self.flush_timer.timeout.connect(self._flush_logs)
+        self.flush_timer.start(100)
         self.start_log_reader()
 
     def start_log_reader(self, service: str = None):
-        """启动日志读取"""
-        if self.log_thread:
+        self._reader_generation += 1
+        generation = self._reader_generation
+        if self.log_thread and self.log_thread.isRunning():
             self.log_thread.stop()
-            self.log_thread.wait()
-
+            QTimer.singleShot(100, lambda: self._restart_reader(generation, service))
+            return
         self.log_thread = LogReaderThread(self.project_path, service)
-        self.log_thread.line_received.connect(self.append_log)
         self.log_thread.error_occurred.connect(self.on_error)
         self.log_thread.start()
 
-    def append_log(self, line: str):
-        """追加日志行"""
-        # 简单的颜色处理
-        color = "#d4d4d4"
-        if "error" in line.lower() or "fatal" in line.lower():
-            color = "#f44747"
-        elif "warn" in line.lower():
-            color = "#dcdcaa"
-        elif "info" in line.lower():
-            color = "#3794ff"
+    def _restart_reader(self, generation, service):
+        if generation == self._reader_generation:
+            self.start_log_reader(service)
 
-        self.log_text.append(f'<span style="color: {color}">{line}</span>')
-
-        if self.auto_scroll_btn.isChecked():
-            scrollbar = self.log_text.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
+    def _flush_logs(self):
+        if not self.log_thread:
+            return
+        chunks = []
+        while self.log_thread.chunks and len(chunks) < 8:
+            chunks.append(self.log_thread.chunks.popleft())
+        if chunks:
+            self.log_text.append("".join("<p>" + html.escape(line[:4096]) + "</p>" for line in "".join(chunks).splitlines()))
+            if self.auto_scroll_btn.isChecked():
+                scrollbar = self.log_text.verticalScrollBar()
+                scrollbar.setValue(scrollbar.maximum())
 
     def on_error(self, error: str):
         """错误处理"""
-        self.log_text.append(f'<span style="color: #f44747">Error: {error}</span>')
+        self.log_text.append(f'<span style="color: #f44747">Error: {html.escape(error)}</span>')
 
     def change_service(self, service: str):
         """切换服务"""
@@ -181,37 +174,12 @@ class LogViewerDialog(FluentDialog):
         pass
 
     def clear_logs(self):
-        """清空日志文件"""
-        try:
-            docker = DockerManager(self.project_path)
-            compose_cmd = docker.get_compose_command()
-            if not compose_cmd:
-                return
-            # 清空 nginx 日志
-            subprocess.run(
-                compose_cmd + ["exec", "-T", "nginx", "sh", "-c",
-                               "for f in /var/log/nginx/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
-                cwd=str(self.project_path),
-                capture_output=True,
-                timeout=30
-            )
-            # 清空 php-fpm 日志
-            subprocess.run(
-                compose_cmd + ["exec", "-T", "php", "sh", "-c",
-                               "for f in /var/log/php-fpm/*.log; do echo -n > \"$f\" 2>/dev/null; done"],
-                cwd=str(self.project_path),
-                capture_output=True,
-                timeout=30
-            )
+        self.log_text.clear()
+        if self.log_thread:
+            self.log_thread.chunks.clear()
 
-            # 清空界面显示
-            self.log_text.clear()
-        except Exception:
-            pass
-
-    def closeEvent(self, event):
-        """关闭事件"""
+    def reject(self):
+        self._reader_generation += 1
         if self.log_thread:
             self.log_thread.stop()
-            self.log_thread.wait()
-        super().closeEvent(event)
+        super().reject()

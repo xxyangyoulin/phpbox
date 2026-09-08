@@ -1,11 +1,12 @@
 """安装扩展对话框"""
 import os
+import threading
+import uuid
 import html
 from typing import List, Optional
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from pathlib import Path
-import subprocess
 
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, PillPushButton, LineEdit, TextEdit,
@@ -14,6 +15,8 @@ from qfluentwidgets import (
     InfoBar, InfoBarPosition, MessageBox
 )
 
+from core.process import run_process
+from ui.worker import register_worker
 from core.docker import DockerManager
 from core.settings import Settings
 from core.proxy import convert_proxy_for_docker
@@ -31,8 +34,9 @@ class InstallExtWorker(QThread):
         self.extensions = extensions
         self.proxy = proxy
         self.logs = []
-        self._running = True
-        self.process = None
+        self.run_id = uuid.uuid4().hex
+        self.cancel_event = threading.Event()
+        register_worker(self, f"{project_path.name} · 安装扩展")
 
     def run(self):
         self.logs = []
@@ -43,7 +47,7 @@ class InstallExtWorker(QThread):
                 self.finished.emit(False, "未检测到 docker compose 或 docker-compose", self.logs)
                 return
             # 显式将代理环境变量注入容器内的安装进程
-            exec_args = ["exec"]
+            exec_args = ["exec", "-T"]
             if self.proxy:
                 exec_args.extend([
                     "-e", f"http_proxy={self.proxy}",
@@ -53,7 +57,10 @@ class InstallExtWorker(QThread):
                 ])
 
             # 安装扩展
-            cmd = compose_cmd + exec_args + ["-u", "root", "php", "install-php-extensions"] + self.extensions
+            pid_file = f"/tmp/phpbox-install-{self.run_id}"
+            cmd = compose_cmd + exec_args + ["-u", "root", "php", "setsid", "sh", "-c",
+                'file="$1"; shift; echo $$ > "$file.pid"; [ ! -f "$file.cancel" ] || exit 130; exec "$@"',
+                "sh", pid_file, "install-php-extensions"] + self.extensions
 
             # 设置环境变量（包含代理）
             env = os.environ.copy()
@@ -65,41 +72,14 @@ class InstallExtWorker(QThread):
                 self.logs.append(f"使用代理: {self.proxy}")
                 self.logs.append("")
 
-            self.process = subprocess.Popen(
-                cmd,
-                cwd=str(self.project_path),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env
-            )
-
-            for line in self.process.stdout:
-                if not self._running:
-                    break
-                stripped = line.rstrip()
-                self.logs.append(stripped)
-                self.progress.emit(stripped)
-
-            self.process.wait()
-            
-            if not self._running:
-                self.finished.emit(False, "安装已取消", self.logs)
-                return
-
-            if self.process.returncode == 0:
+            result = run_process(cmd, cwd=str(self.project_path), env=env,
+                                 cancel=self.cancel_event, on_output=self.progress.emit, timeout=3600)
+            if result.returncode == 0:
                 # 重启 PHP 服务
                 self.logs.append("")
                 self.logs.append("=== 重启 PHP 服务 ===")
                 restart_cmd = compose_cmd + ["restart", "php"]
-                result = subprocess.run(
-                    restart_cmd,
-                    cwd=str(self.project_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
+                result = run_process(restart_cmd, cwd=str(self.project_path), cancel=self.cancel_event, timeout=60)
                 if result.stdout:
                     self.logs.append(result.stdout.strip())
                 if result.returncode == 0:
@@ -109,18 +89,19 @@ class InstallExtWorker(QThread):
             else:
                 self.finished.emit(False, "扩展安装失败", self.logs)
         except Exception as e:
-            if self._running:
-                self.logs.append(f"错误: {str(e)}")
-                self.finished.emit(False, str(e), self.logs)
+            if isinstance(e, (InterruptedError, TimeoutError)):
+                try:
+                    result = run_process(compose_cmd + ["exec", "-T", "-u", "root", "php", "sh", "-c",
+                        'touch "$1.cancel"; if [ -f "$1.pid" ]; then /bin/kill -TERM -- "-$(cat "$1.pid")"; fi',
+                        "sh", f"/tmp/phpbox-install-{self.run_id}"], cwd=str(self.project_path), timeout=15)
+                    if result.returncode:
+                        raise RuntimeError(result.stdout)
+                except Exception as cleanup_error:
+                    e = RuntimeError(f"{e}；容器内安装进程终止失败：{cleanup_error}")
+            self.finished.emit(False, str(e), self.logs)
 
     def stop(self):
-        self._running = False
-        if self.process:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+        self.cancel_event.set()
 
 
 class InstallExtDialog(FluentDialog):
@@ -194,6 +175,7 @@ class InstallExtDialog(FluentDialog):
 
         self.log_text = TextEdit()
         self.log_text.setReadOnly(True)
+        self.log_text.document().setMaximumBlockCount(2000)
         self.log_text.setStyleSheet(f"""
             TextEdit {{
                 background-color: #1e1e1e;
@@ -217,6 +199,9 @@ class InstallExtDialog(FluentDialog):
 
         # 按钮
         btn_layout = QHBoxLayout()
+        background_btn = PushButton("转到后台")
+        background_btn.clicked.connect(self.hide)
+        btn_layout.addWidget(background_btn)
         btn_layout.addStretch()
 
         self.close_btn = PushButton("关闭")
@@ -315,6 +300,7 @@ class InstallExtDialog(FluentDialog):
 
         # 开始安装
         self.install_btn.setEnabled(False)
+        self.close_btn.setText("取消操作")
         self.ext_input.setEnabled(False)
         self.progress.setVisible(True)
         self.status_label.setText("正在安装扩展...")
@@ -329,6 +315,7 @@ class InstallExtDialog(FluentDialog):
         """安装完成"""
         self.progress.setVisible(False)
         self.install_btn.setEnabled(True)
+        self.close_btn.setText("关闭")
         self.ext_input.setEnabled(True)
 
         # 添加最终日志
@@ -391,8 +378,5 @@ class InstallExtDialog(FluentDialog):
             print(f"持久化扩展到 Dockerfile 失败: {e}")
 
     def closeEvent(self, event):
-        """关闭事件"""
-        if self.worker and self.worker.isRunning():
-            self.worker.stop()
-            self.worker.wait()
-        super().closeEvent(event)
+        self.hide()
+        event.ignore()

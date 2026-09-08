@@ -1,5 +1,6 @@
 """项目管理核心逻辑"""
 import errno
+import json
 import os
 import re
 import time
@@ -44,21 +45,23 @@ class Project:
     nginx_running: bool = False
     mysql_running: bool = False
     redis_running: bool = False
+    cron_running: bool = False
     auto_restart: bool = True  # 是否开机自启
 
     @property
     def status_text(self) -> str:
-        if self.php_running and self.nginx_running:
+        if self.health_status == "healthy":
             return "运行中"
-        if self.php_running or self.nginx_running or self.mysql_running or self.redis_running:
+        if self.php_running or self.nginx_running or self.mysql_running or self.redis_running or self.cron_running:
             return "部分运行"
         return "已停止"
 
     @property
     def health_status(self) -> str:
-        if self.php_running and self.nginx_running:
+        services = ["php", "nginx"] + [name for name in ("mysql", "redis", "cron") if self.has_service(name)]
+        if all(getattr(self, name + "_running") for name in services):
             return "healthy"
-        if self.php_running or self.nginx_running or self.mysql_running or self.redis_running:
+        if self.php_running or self.nginx_running or self.mysql_running or self.redis_running or self.cron_running:
             return "partial"
         return "stopped"
 
@@ -71,6 +74,8 @@ class Project:
             parts.append(f"MySQL {'运行' if self.mysql_running else '停止'}")
         if self.has_service("redis"):
             parts.append(f"Redis {'运行' if self.redis_running else '停止'}")
+        if self.has_service("cron"):
+            parts.append(f"Cron {'运行' if self.cron_running else '停止'}")
         return " / ".join(parts)
 
     def has_service(self, service: str) -> bool:
@@ -131,6 +136,7 @@ class ProjectManager:
             nginx_running=nginx_running,
             mysql_running=mysql_running,
             redis_running=redis_running,
+            cron_running=self._check_service_running(path, "cron"),
             auto_restart=auto_restart
         )
 
@@ -264,15 +270,10 @@ class ProjectManager:
         """删除项目"""
         try:
             docker = DockerManager(project.path)
-            # 停止并删除容器
-            compose_cmd = docker.get_compose_command()
-            if compose_cmd:
-                subprocess.run(
-                    compose_cmd + ["down", "--volumes"],
-                    cwd=str(project.path),
-                    capture_output=True,
-                    timeout=60
-                )
+            result = docker._run_command(["down", "--volumes"])
+            if not result.success:
+                print(f"停止容器失败，保留项目目录: {result.error}")
+                return False
             # 删除目录
             shutil.rmtree(project.path)
             return True
@@ -281,95 +282,85 @@ class ProjectManager:
             return False
 
     def rename_project(self, project: Project, new_name: str) -> bool:
-        """重命名项目"""
+        valid, _ = self.is_valid_name(new_name)
+        if not valid or self.project_exists(new_name):
+            return False
+
+        old_path = project.path
+        new_path = old_path.parent / new_name
+        code_path = get_project_code_path(old_path, project.name)
+        rename_code = code_path.name == project.name and code_path.is_dir()
+        snapshots = {}
+        moved = False
+        code_moved = False
+        running_services = []
+        docker = DockerManager(old_path)
         try:
-            # 校验新名称
-            valid, _ = self.is_valid_name(new_name)
-            if not valid:
-                return False
+            status = docker._run_command(["ps", "--status", "running", "--format", "{{.Service}}"])
+            if not status.success:
+                raise RuntimeError(status.error)
+            running_services = status.output.splitlines()
+            for relative in [Path("docker-compose.yml"), Path("Dockerfile"),
+                             code_path.relative_to(old_path) / ".phpbox/tasks/tasks.json"]:
+                file = old_path / relative
+                if file.exists():
+                    snapshots[relative] = file.read_bytes()
+            result = docker.down()
+            if not result.success:
+                raise RuntimeError(result.error)
 
-            # 检查新名称是否已存在
-            if self.project_exists(new_name):
-                return False
+            old_path.rename(new_path)
+            moved = True
+            if rename_code:
+                (new_path / project.name).rename(new_path / new_name)
+                code_moved = True
 
-            # 如果项目正在运行，先停止
-            was_running = project.is_running
-            docker = DockerManager(project.path)
-            if was_running:
-                compose_cmd = docker.get_compose_command()
-                if compose_cmd:
-                    subprocess.run(
-                        compose_cmd + ["down"],
-                        cwd=str(project.path),
-                        capture_output=True,
-                        timeout=60
-                    )
-
-            # 重命名目录
-            new_path = project.path.parent / new_name
-            project.path.rename(new_path)
-
-            # 更新 docker-compose.yml 中的项目名
             compose_file = new_path / "docker-compose.yml"
-            if compose_file.exists():
-                content = compose_file.read_text()
-                # 替换 name: phpdev-{old_name}
-                old_prefix = f"phpdev-{project.name}"
-                new_prefix = f"phpdev-{new_name}"
-                content = content.replace(old_prefix, new_prefix)
-                compose_file.write_text(content)
-
-            # 更新 Dockerfile 中的项目名（用于下次重建镜像）
+            content = compose_file.read_text()
+            # 保持 Compose 项目标识，继续使用原数据库卷和网络。
+            if not re.search(r"^name:", content, re.MULTILINE):
+                content = f"name: {project.name.lower()}\n" + content
+            content = re.sub(
+                rf"(container_name:\s*)phpdev-{re.escape(project.name)}-",
+                rf"\g<1>phpdev-{new_name}-", content
+            )
+            if rename_code:
+                content = content.replace(f"./{project.name}:", f"./{new_name}:")
+            content = content.replace(f"PROJECT_NAME={project.name}", f"PROJECT_NAME={new_name}")
+            compose_file.write_text(content)
             dockerfile = new_path / "Dockerfile"
             if dockerfile.exists():
                 content = dockerfile.read_text()
-                # 替换 PROJECT_NAME="{old_name}"
-                content = re.sub(r'PROJECT_NAME="([^"]*)"', f'PROJECT_NAME="{new_name}"', content)
+                content = re.sub(r'PROJECT_NAME="[^"]*"', f'PROJECT_NAME="{new_name}"', content)
                 dockerfile.write_text(content)
+            tasks_file = new_path / (new_name if rename_code else code_path.name) / ".phpbox/tasks/tasks.json"
+            if tasks_file.exists():
+                tasks = json.loads(tasks_file.read_text())
+                for task in tasks:
+                    task["project_name"] = new_name
+                tasks_file.write_text(json.dumps(tasks, ensure_ascii=False, indent=2) + "\n")
 
-            # 如果之前是运行状态，重新启动并更新容器内的 zsh 提示符
-            if was_running:
-                docker = DockerManager(new_path)
-                compose_cmd = docker.get_compose_command()
-                # 检查端口是否被占用
-                port = None
-                compose_file = new_path / "docker-compose.yml"
-                if compose_file.exists():
-                    content = compose_file.read_text()
-                    match = re.search(r'"(\d+):80"', content)
-                    if match:
-                        port = int(match.group(1))
-
-                if port:
-                    usage = get_port_usage(port, new_name, include_configured_projects=False)
-                    if usage:
-                        print(f"警告: 端口 {port} 已被 {usage} 占用，跳过重启")
-                        return True  # 重命名成功，但不重启
-
-                if compose_cmd:
-                    # 启动容器
-                    subprocess.run(
-                        compose_cmd + ["up", "-d"],
-                        cwd=str(new_path),
-                        capture_output=True,
-                        timeout=120
-                    )
-
-                    # 等待容器启动
-                    time.sleep(3)
-
-                    # 直接在容器中修改 .zshrc 的提示符
-                    sed_cmd = f'sed -i \'s/export PROJECT_NAME=.*/export PROJECT_NAME="{new_name}"/\' ~/.zshrc'
-                    subprocess.run(
-                        compose_cmd + ["exec", "-T", "php", "sh", "-c", sed_cmd],
-                        cwd=str(new_path),
-                        capture_output=True,
-                        timeout=30
-                    )
-
+            if running_services:
+                result = DockerManager(new_path)._run_command(["up", "-d", "--no-deps"] + running_services)
+                if not result.success:
+                    raise RuntimeError(result.error)
             return True
-        except Exception as e:
-            print(f"重命名项目失败: {e}")
+        except Exception as exc:
+            print(f"重命名失败: {exc}")
+            if moved:
+                cleanup = DockerManager(new_path).down()
+                if not cleanup.success:
+                    print(f"停止新容器失败，保留当前目录以便恢复: {new_path}: {cleanup.error}")
+                    return False
+                if code_moved:
+                    (new_path / new_name).rename(new_path / project.name)
+                new_path.rename(old_path)
+                for relative, data in snapshots.items():
+                    (old_path / relative).write_bytes(data)
+                if running_services:
+                    restored = DockerManager(old_path)._run_command(["up", "-d", "--no-deps"] + running_services)
+                    if not restored.success:
+                        print(f"目录已恢复，但容器恢复失败: {restored.error}")
             return False
 
     def set_port(self, project: Project, new_port: int) -> bool:

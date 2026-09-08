@@ -7,6 +7,7 @@ import argparse
 import shlex
 import unicodedata
 from pathlib import Path
+from typing import Optional
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent
@@ -122,7 +123,7 @@ def _find_project_by_cwd(manager: ProjectManager, cwd: Path):
     return None
 
 
-def _resolve_target_project(manager: ProjectManager, name: str | None):
+def _resolve_target_project(manager: ProjectManager, name: Optional[str]):
     if name:
         return _find_project(manager, name)
     return _find_project_by_cwd(manager, Path.cwd())
