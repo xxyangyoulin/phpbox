@@ -224,7 +224,7 @@ class BuildWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str, list)  # success, message, logs
 
-    def __init__(self, project_path: Path, proxy: str = None, prepare=None, finalize=None):
+    def __init__(self, project_path: Path, proxy: str = None, prepare=None, finalize=None, dialog=None):
         super().__init__()
         self.project_path = project_path
         self.prepare = prepare
@@ -232,7 +232,7 @@ class BuildWorker(QThread):
         self.proxy = proxy
         self.logs = []
         self.cancel_event = threading.Event()
-        register_worker(self, f"{project_path.name} · 创建项目")
+        register_worker(self, f"{project_path.name} · 创建项目", dialog=dialog)
 
     def run(self):
         try:
@@ -862,7 +862,7 @@ class CreateProjectDialog(FluentDialog):
             result = DockerManager(project_path, cancel=cancel).up()
             if not result.success:
                 raise RuntimeError(result.error)
-        self.build_worker = BuildWorker(project_path, proxy, prepare, finalize)
+        self.build_worker = BuildWorker(project_path, proxy, prepare, finalize, dialog=self.progress_dialog)
         self.build_worker.progress.connect(self._on_build_progress)
         self.build_worker.finished.connect(self._on_build_finished)
         self.progress_dialog.rejected.connect(self._on_progress_dialog_rejected)
@@ -1214,6 +1214,16 @@ services:
     user: "{uid_gid}"
     environment:
       - PROJECT_NAME={project_name}
+      - http_proxy=
+      - https_proxy=
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - all_proxy=
+      - ALL_PROXY=
+      - ftp_proxy=
+      - FTP_PROXY=
+      - no_proxy=
+      - NO_PROXY=
     volumes:
       - ./{code_dir_name}:/var/www/html
       - ./php/php.ini:/usr/local/etc/php/php.ini

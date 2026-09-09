@@ -105,6 +105,19 @@ class ProcessTests(unittest.TestCase):
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_runtime_proxy_overrides_docker_client_defaults(self):
+        for proxy in ['', 'http://127.0.0.1:7890']:
+            with patch('core.proxy.get_host_ip_for_docker', return_value='172.17.0.1'):
+                compose = CreateProjectDialog.generate_compose(None, 'demo', 8080, proxy, 'demo')
+            php_environment = compose.split('    environment:\n', 1)[1].split('    volumes:', 1)[0]
+            cron = TaskManager.build_cron_service_block('demo', 'demo')
+            for key in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY',
+                        'all_proxy', 'ALL_PROXY', 'ftp_proxy', 'FTP_PROXY', 'no_proxy', 'NO_PROXY']:
+                self.assertIn(f'      - {key}=\n', php_environment)
+                self.assertIn(f'      - {key}=\n', cron)
+            if proxy:
+                self.assertIn('HTTP_PROXY: "http://172.17.0.1:7890"', compose)
+
     def test_extension_generation_uses_installer_compatibility_rules(self):
         generator = SimpleNamespace(generate_ext_install_lines=lambda extensions:
             CreateProjectDialog.generate_ext_install_lines(None, extensions))

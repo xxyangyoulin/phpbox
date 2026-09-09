@@ -7,13 +7,13 @@ from PyQt6.QtWidgets import QApplication
 _workers = set()
 
 
-def register_worker(worker, title=None):
+def register_worker(worker, title=None, dialog=None):
     _workers.add(worker)
     worker.setParent(QApplication.instance())
     if title:
         for window in QApplication.topLevelWidgets():
             if hasattr(window, "operations_page"):
-                window.operations_page.track(worker, title, str(worker.project_path), cancellable=True)
+                window.operations_page.track(worker, title, str(worker.project_path), cancellable=True, dialog=dialog)
                 break
 
 

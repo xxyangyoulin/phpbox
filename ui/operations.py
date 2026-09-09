@@ -19,6 +19,9 @@ class OperationsPage(QWidget):
         self.logs.document().setMaximumBlockCount(2000)
         layout.addWidget(self.logs, 1)
         buttons = QHBoxLayout()
+        self.open_window = PushButton("打开操作窗口")
+        self.open_window.clicked.connect(self.open_current_window)
+        buttons.addWidget(self.open_window)
         self.cancel = PushButton("取消操作")
         self.cancel.clicked.connect(self.cancel_current)
         buttons.addWidget(self.cancel)
@@ -27,6 +30,7 @@ class OperationsPage(QWidget):
         buttons.addWidget(clear)
         layout.addLayout(buttons)
         self.list.currentRowChanged.connect(self.refresh)
+        self.list.itemDoubleClicked.connect(self.open_current_window)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(200)
@@ -34,9 +38,11 @@ class OperationsPage(QWidget):
     def is_busy(self, key):
         return any(r["key"] == key and r["state"] in ("执行中", "正在取消") for r in self.records)
 
-    def track(self, worker, title, key="", cancellable=False):
+    def track(self, worker, title, key="", cancellable=False, dialog=None):
         record = dict(worker=worker, title=title, key=key, state="执行中",
-                      logs=deque(maxlen=2000), cancellable=cancellable)
+                      logs=deque(maxlen=2000), cancellable=cancellable, dialog=dialog)
+        if dialog is not None:
+            dialog.destroyed.connect(lambda: record.update(dialog=None))
         self.records.append(record)
         self.list.addItem(title + " · 执行中")
         self.list.setCurrentRow(len(self.records) - 1)
@@ -64,6 +70,17 @@ class OperationsPage(QWidget):
             self.logs.setPlainText(content)
             self.logs.verticalScrollBar().setValue(self.logs.verticalScrollBar().maximum())
         self.cancel.setEnabled(bool(record and record["cancellable"] and record["state"] == "执行中"))
+        self.open_window.setEnabled(bool(record and record["dialog"] is not None))
+
+    def open_current_window(self, *args):
+        index = self.list.currentRow()
+        if not 0 <= index < len(self.records):
+            return
+        dialog = self.records[index]["dialog"]
+        if dialog is not None:
+            dialog.showNormal()
+            dialog.raise_()
+            dialog.activateWindow()
 
     def cancel_current(self):
         record = self.records[self.list.currentRow()]

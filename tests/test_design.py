@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QDialog
 from core.project import Project
 from ui.main_window import ModernDashboardWidget
 from ui.operations import OperationsPage
@@ -14,6 +14,24 @@ APP = QApplication.instance() or QApplication([])
 
 
 class DesignTests(unittest.TestCase):
+    def test_hidden_operation_window_can_be_reopened(self):
+        panel = OperationsPage()
+        dialog = QDialog()
+        worker = OperationWorker(lambda: None)
+        panel.track(worker, 'demo · 创建项目', dialog=dialog)
+        dialog.show()
+        dialog.hide()
+        panel.open_window.click()
+        self.assertTrue(dialog.isVisible())
+        dialog.hide()
+        panel.finish(panel.records[0], True, 'done')
+        panel.open_window.click()
+        self.assertTrue(dialog.isVisible())
+        dialog.hide()
+        worker.deleteLater()
+        dialog.deleteLater()
+        panel.deleteLater()
+
     def test_enabled_database_affects_health_and_service_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

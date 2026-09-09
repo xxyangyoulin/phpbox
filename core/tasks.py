@@ -396,6 +396,17 @@ exit "$EXIT_CODE"
         USER_UID: {uid}
         USER_GID: {gid}
     restart: unless-stopped
+    environment:
+      - http_proxy=
+      - https_proxy=
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - all_proxy=
+      - ALL_PROXY=
+      - ftp_proxy=
+      - FTP_PROXY=
+      - no_proxy=
+      - NO_PROXY=
     command: ["sh", "-lc", "mkdir -p /var/www/html/.phpbox/tasks/logs /var/www/html/.phpbox/tasks/state && touch /var/www/html/.phpbox/tasks/generated.cron && crontab /var/www/html/.phpbox/tasks/generated.cron || true && exec cron -f"]
     volumes:
       - ./{code_dir_name}:/var/www/html

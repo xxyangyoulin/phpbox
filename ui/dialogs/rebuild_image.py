@@ -27,13 +27,13 @@ class RebuildImageWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str, list)
 
-    def __init__(self, project_path: Path, proxy: str = None):
+    def __init__(self, project_path: Path, proxy: str = None, dialog=None):
         super().__init__()
         self.project_path = project_path
         self.proxy = proxy
         self.logs: List[str] = []
         self.cancel_event = threading.Event()
-        register_worker(self, f"{project_path.name} · 重建镜像")
+        register_worker(self, f"{project_path.name} · 重建镜像", dialog=dialog)
 
     def run(self):
         self.logs = []
@@ -202,7 +202,7 @@ class RebuildImageDialog(FluentDialog):
             if raw_proxy:
                 proxy = convert_proxy_for_docker(raw_proxy)
 
-        self.worker = RebuildImageWorker(self.project_path, proxy)
+        self.worker = RebuildImageWorker(self.project_path, proxy, dialog=self)
         self.worker.progress.connect(self.append_log)
         self.worker.finished.connect(self.on_finished)
         self.worker.start()

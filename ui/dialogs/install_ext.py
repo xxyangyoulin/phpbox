@@ -28,7 +28,7 @@ class InstallExtWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str, list)  # success, message, logs
 
-    def __init__(self, project_path: Path, extensions: List[str], proxy: str = None):
+    def __init__(self, project_path: Path, extensions: List[str], proxy: str = None, dialog=None):
         super().__init__()
         self.project_path = project_path
         self.extensions = extensions
@@ -36,7 +36,7 @@ class InstallExtWorker(QThread):
         self.logs = []
         self.run_id = uuid.uuid4().hex
         self.cancel_event = threading.Event()
-        register_worker(self, f"{project_path.name} · 安装扩展")
+        register_worker(self, f"{project_path.name} · 安装扩展", dialog=dialog)
 
     def run(self):
         self.logs = []
@@ -306,7 +306,7 @@ class InstallExtDialog(FluentDialog):
         self.status_label.setText("正在安装扩展...")
 
         self._pending_extensions = extensions
-        self.worker = InstallExtWorker(self.project_path, extensions, proxy)
+        self.worker = InstallExtWorker(self.project_path, extensions, proxy, dialog=self)
         self.worker.progress.connect(self.append_log)
         self.worker.finished.connect(self.on_install_finished)
         self.worker.start()
