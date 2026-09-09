@@ -105,6 +105,19 @@ class ProcessTests(unittest.TestCase):
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_extension_generation_uses_installer_compatibility_rules(self):
+        generator = SimpleNamespace(generate_ext_install_lines=lambda extensions:
+            CreateProjectDialog.generate_ext_install_lines(None, extensions))
+        extensions = ['redis', 'xdebug', 'swoole', 'grpc', 'protobuf', 'igbinary', 'msgpack']
+        for version in ['7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4']:
+            with self.subTest(php=version):
+                dockerfile = CreateProjectDialog.generate_dockerfile(generator, 'demo', version, extensions, '')
+                commands = [line for line in dockerfile.splitlines() if line.startswith('RUN install-php-extensions ')]
+                self.assertEqual(commands, [
+                    'RUN install-php-extensions igbinary msgpack',
+                    'RUN install-php-extensions redis xdebug swoole grpc protobuf',
+                ])
+
     def test_cron(self):
         for expression in ['* * * * *', '*/5 0-23 1,15 jan mon-fri', '0 0 1 12 7']:
             self.assertTrue(TaskManager.is_valid_cron_expression(expression), expression)

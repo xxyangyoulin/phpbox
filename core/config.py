@@ -109,30 +109,6 @@ EXTENSIONS = {
     ],
 }
 
-# 扩展版本兼容性 (PHP 版本 => 扩展版本)
-EXT_VERSION_PHP72 = {
-    "igbinary": "igbinary-^3.2",
-    "xdebug": "xdebug-^3.1",
-    "redis": "redis-^5.3",
-    "swoole": "swoole-^4.8",
-    "grpc": "grpc-^1.54",
-    "protobuf": "protobuf-^3.25",
-}
-
-EXT_VERSION_PHP74 = {
-    "igbinary": "igbinary-^3.2",
-    "xdebug": "xdebug-^3.3",
-    "redis": "redis-^6.0",
-    "swoole": "swoole-^5.0",
-}
-
-EXT_VERSION_PHP83 = {
-    "igbinary": "igbinary-^3.2",
-    "redis": "redis-^6.0",
-    "xdebug": "xdebug-^3.3",
-}
-
-
 def ensure_base_dir():
     """确保基础目录存在"""
     BASE_DIR.mkdir(parents=True, exist_ok=True)

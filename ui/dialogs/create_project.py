@@ -21,7 +21,6 @@ from qfluentwidgets import (
 )
 
 from core.config import BASE_DIR, PHP_VERSIONS, DEFAULT_PORT, ensure_base_dir
-from core.config import EXT_VERSION_PHP72, EXT_VERSION_PHP74, EXT_VERSION_PHP83
 from core.project import (
     ProjectManager, get_port_usage, find_available_port,
     get_project_code_dir_name,
@@ -1077,7 +1076,7 @@ class CreateProjectDialog(FluentDialog):
         # 扩展安装
         if extensions:
             lines.extend(["", "# 安装 PHP 扩展"])
-            install_lines = self.generate_ext_install_lines(php_version, extensions)
+            install_lines = self.generate_ext_install_lines(extensions)
             lines.extend(install_lines)
 
         # 清除代理
@@ -1093,31 +1092,19 @@ class CreateProjectDialog(FluentDialog):
 
         return "\n".join(lines) + "\n"
 
-    def generate_ext_install_lines(self, php_version: str,
-                                    extensions: List[str]) -> List[str]:
+    def generate_ext_install_lines(self, extensions: List[str]) -> List[str]:
         """生成扩展安装命令"""
         # 优先安装的扩展
         priority = ["igbinary", "msgpack"]
-
-        # 根据版本选择扩展名
-        def get_ext_name(ext: str) -> str:
-            if php_version == "7.2" and ext in EXT_VERSION_PHP72:
-                return EXT_VERSION_PHP72[ext]
-            elif php_version in ["7.3", "7.4", "8.0", "8.1", "8.2"] and ext in EXT_VERSION_PHP74:
-                return EXT_VERSION_PHP74[ext]
-            elif ext in EXT_VERSION_PHP83:
-                return EXT_VERSION_PHP83[ext]
-            return ext
 
         priority_exts = []
         normal_exts = []
 
         for ext in extensions:
-            name = get_ext_name(ext)
             if ext in priority:
-                priority_exts.append(name)
+                priority_exts.append(ext)
             else:
-                normal_exts.append(name)
+                normal_exts.append(ext)
 
         lines = []
         if priority_exts:
