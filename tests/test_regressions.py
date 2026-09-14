@@ -260,11 +260,20 @@ class InstallationTests(unittest.TestCase):
         self.assertFalse(list((self.root / 'opt').glob('.phpbox-*')))
 
     def test_complete_installation(self):
+        self.binary.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
         result = subprocess.run(['bash', str(self.script), 'install'], env=self.env, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.root / 'opt/phpbox/_internal').is_dir())
         self.assertFalse((self.root / 'opt/phpbox/old').exists())
         self.assertFalse(list((self.root / 'opt').glob('.phpbox-*')))
+        alias = self.root / 'local/bin/pbox'
+        self.assertEqual(os.readlink(alias), 'phpbox')
+        result = subprocess.run([str(alias), 'exec', 'argument with spaces'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'exec\nargument with spaces\n')
+        result = subprocess.run(['bash', str(self.script), 'uninstall'], env=self.env, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(alias.is_symlink())
 
 
 class MoreTaskTests(unittest.TestCase):

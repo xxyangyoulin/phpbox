@@ -153,6 +153,7 @@ EOF
 exec /opt/phpbox/phpbox "$@"
 EOF
     chmod 755 "$DEB_DIR/usr/bin/phpbox"
+    ln -s phpbox "$DEB_DIR/usr/bin/pbox"
     cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
 
     # 构建

@@ -135,6 +135,7 @@ jobs:
           exec /opt/phpbox/phpbox "$@"
           EOF
           chmod +x "$DEB_DIR/usr/bin/phpbox"
+          ln -s phpbox "$DEB_DIR/usr/bin/pbox"
           cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
           dpkg-deb --build "$DEB_DIR" "dist/phpbox_${VERSION}_amd64.deb"
           rm -rf "$DEB_DIR"

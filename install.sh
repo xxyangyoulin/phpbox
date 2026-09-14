@@ -69,6 +69,7 @@ install_system() {
 exec "$INSTALL_DIR/phpbox" "\$@"
 EOF
     sudo chmod +x /usr/local/bin/phpbox
+    sudo ln -sfn phpbox /usr/local/bin/pbox
 
     # 复制 desktop 文件
     sudo cp "$SCRIPT_DIR/phpbox.desktop" /usr/share/applications/
@@ -89,13 +90,14 @@ EOF
     sudo rm -rf "$backup"
     echo "=== 安装完成! ==="
     echo "可在应用菜单中找到「PHP 开发环境管理器」"
-    echo "或运行: phpbox"
+    echo "或运行: phpbox / pbox"
 }
 
 # 卸载
 uninstall() {
     echo ">>> 卸载 PHP 开发环境管理器..."
     sudo rm -f /usr/local/bin/phpbox
+    sudo rm -f /usr/local/bin/pbox
     sudo rm -rf "$INSTALL_DIR"
     sudo rm -f /usr/share/applications/phpbox.desktop
     sudo rm -f /usr/share/icons/hicolor/*/apps/phpbox.png

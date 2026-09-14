@@ -82,7 +82,9 @@ dist/phpbox/phpbox
 安装后：
 
 - 程序主体位于 `/opt/phpbox`
-- 启动命令为 `phpbox`
+- 启动命令为 `phpbox`，也可以使用简写 `pbox`，例如 `pbox -h`、`pbox list`
+
+通过安装脚本或 `.deb` 包安装时，会自动创建 `pbox` 到 `phpbox` 的符号链接，无需配置 Shell 别名。
 
 ## GUI 功能
 
