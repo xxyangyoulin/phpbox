@@ -430,6 +430,7 @@ def main():
     from PyQt6.QtCore import Qt, QSettings, qInstallMessageHandler
     from ui.main_window import MainWindow
     from ui.styles import apply_theme, ThemeWatcher
+    from ui.single_instance import SingleInstance
 
     qInstallMessageHandler(_qt_message_handler)
 
@@ -440,9 +441,15 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("PHP 开发环境管理器")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationVersion("1.0.19")
     app.setOrganizationName("phpbox")
     app.setQuitOnLastWindowClosed(False)  # 关闭窗口不退出，托盘运行
+
+    request = "hide" if args.hide else ("new-project" if args.new_project else "show")
+    instance = SingleInstance(request, app)
+    if not instance.is_primary:
+        return
+    app.aboutToQuit.connect(instance.close)
 
     # 加载设置
     settings = QSettings()
@@ -478,6 +485,17 @@ def main():
         docker_error = str(e) or "无法连接到 Docker 守护进程，请确认 Docker 已安装并正在运行。"
 
     window = MainWindow(docker_ready=docker_ready, docker_error=docker_error)
+
+    def activate_existing(request):
+        if request not in {"show", "new-project"}:
+            return
+        window.showNormal()
+        window.raise_()
+        window.activateWindow()
+        if request == "new-project":
+            window.create_project()
+
+    instance.requested.connect(activate_existing)
 
     # 根据参数决定是否显示窗口
     if args.hide:
