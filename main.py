@@ -441,7 +441,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("PHP 开发环境管理器")
-    app.setApplicationVersion("1.0.19")
+    app.setApplicationVersion("1.0.20")
     app.setOrganizationName("phpbox")
     app.setQuitOnLastWindowClosed(False)  # 关闭窗口不退出，托盘运行
 
