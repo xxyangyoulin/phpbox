@@ -884,6 +884,14 @@ class CreateProjectDialog(FluentDialog):
         dockerfile = self.generate_dockerfile(project_name, php_version, extensions, proxy)
         (project_path / "Dockerfile").write_text(dockerfile)
 
+        # 写入容器内 proxy/noproxy 助手块（构建期进镜像，使容器内可用 proxy 命令）
+        try:
+            from core.proxy import sync_project_dockerfile_proxy
+            from core.settings import Settings
+            sync_project_dockerfile_proxy(project_path, Settings().get_proxy())
+        except (OSError, RuntimeError, ValueError):
+            pass
+
         # 生成 docker-compose.yml
         compose = self.generate_compose(project_name, port, proxy, code_dir_name, mysql_config, redis_config)
         (project_path / "docker-compose.yml").write_text(compose)
@@ -1169,6 +1177,16 @@ class CreateProjectDialog(FluentDialog):
       MYSQL_USER: {json.dumps(mysql_config['user'].replace('$', '$$'), ensure_ascii=False)}
       MYSQL_PASSWORD: {json.dumps(mysql_config['password'].replace('$', '$$'), ensure_ascii=False)}
       MYSQL_ROOT_PASSWORD: {json.dumps(mysql_config['root_password'].replace('$', '$$'), ensure_ascii=False)}
+      http_proxy: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      all_proxy: ""
+      ALL_PROXY: ""
+      ftp_proxy: ""
+      FTP_PROXY: ""
+      no_proxy: ""
+      NO_PROXY: ""
     volumes:
       - mysql_data:/var/lib/mysql
     networks:
@@ -1182,6 +1200,17 @@ class CreateProjectDialog(FluentDialog):
     container_name: {prefix}-redis
     image: redis:7-alpine
     restart: unless-stopped
+    environment:
+      - http_proxy=
+      - https_proxy=
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - all_proxy=
+      - ALL_PROXY=
+      - ftp_proxy=
+      - FTP_PROXY=
+      - no_proxy=
+      - NO_PROXY=
     ports:
       - "{redis_config['port']}:6379"
     volumes:
@@ -1241,6 +1270,17 @@ services:
     container_name: {prefix}-nginx
     image: nginx:alpine
     restart: unless-stopped
+    environment:
+      - http_proxy=
+      - https_proxy=
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - all_proxy=
+      - ALL_PROXY=
+      - ftp_proxy=
+      - FTP_PROXY=
+      - no_proxy=
+      - NO_PROXY=
     entrypoint: ["nginx", "-g", "daemon off;"]
     ports:
       - "{port}:80"

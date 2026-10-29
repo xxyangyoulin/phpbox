@@ -106,15 +106,25 @@ class ProcessTests(unittest.TestCase):
 
 class BoundaryTests(unittest.TestCase):
     def test_runtime_proxy_overrides_docker_client_defaults(self):
+        proxy_keys = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY',
+                      'all_proxy', 'ALL_PROXY', 'ftp_proxy', 'FTP_PROXY', 'no_proxy', 'NO_PROXY']
         for proxy in ['', 'http://127.0.0.1:7890']:
             with patch('core.proxy.get_host_ip_for_docker', return_value='172.17.0.1'):
-                compose = CreateProjectDialog.generate_compose(None, 'demo', 8080, proxy, 'demo')
-            php_environment = compose.split('    environment:\n', 1)[1].split('    volumes:', 1)[0]
+                compose = CreateProjectDialog.generate_compose(
+                    None, 'demo', 8080, proxy, 'demo',
+                    mysql_config={'port': 3306, 'database': 'demo', 'user': 'demo',
+                                  'password': 'demo', 'root_password': 'root'},
+                    redis_config={'port': 6379})
             cron = TaskManager.build_cron_service_block('demo', 'demo')
-            for key in ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY',
-                        'all_proxy', 'ALL_PROXY', 'ftp_proxy', 'FTP_PROXY', 'no_proxy', 'NO_PROXY']:
-                self.assertIn(f'      - {key}=\n', php_environment)
-                self.assertIn(f'      - {key}=\n', cron)
+            # 每个服务的段落（php/nginx/mysql/redis 在 compose 中，cron 单独生成）
+            sections = {'compose-php': compose.split('  php:\n', 1)[1].split('\n  nginx:', 1)[0],
+                        'compose-nginx': compose.split('  nginx:\n', 1)[1].split('\n  mysql:', 1)[0],
+                        'compose-mysql': compose.split('  mysql:\n', 1)[1].split('\n  redis:', 1)[0],
+                        'compose-redis': compose.split('  redis:\n', 1)[1].split('\n\nvolumes:', 1)[0],
+                        'cron': cron}
+            for name, section in sections.items():
+                for key in proxy_keys:
+                    self.assertIn(key, section, f'{name} 缺少 {key} 代理清空项')
             if proxy:
                 self.assertIn('HTTP_PROXY: "http://172.17.0.1:7890"', compose)
 

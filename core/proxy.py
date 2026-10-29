@@ -1,5 +1,6 @@
 """代理检测模块"""
 import os
+import base64
 import subprocess
 import re
 import shlex
@@ -123,11 +124,11 @@ def build_shell_proxy_block(proxy_url: Optional[str]) -> str:
 
 def build_dockerfile_proxy_snippet(proxy_url: Optional[str]) -> str:
     block = build_shell_proxy_block(proxy_url)
+    # 用 base64 避免 Dockerfile heredoc 依赖 BuildKit 语法指令（旧版前端会静默写入 0 字节）
+    encoded = base64.b64encode(block.encode("utf-8")).decode("ascii")
     return "\n".join([
         DOCKERFILE_PROXY_BEGIN,
-        "RUN cat <<'EOF' >> /home/user/.zshrc",
-        block,
-        "EOF",
+        f"RUN echo '{encoded}' | base64 -d >> /home/user/.zshrc",
         DOCKERFILE_PROXY_END,
     ])
 

@@ -16,7 +16,7 @@ from qfluentwidgets import (
 from core.process import run_process
 from ui.worker import register_worker
 from core.docker import DockerManager
-from core.proxy import convert_proxy_for_docker
+from core.proxy import convert_proxy_for_docker, sync_project_dockerfile_proxy
 from core.settings import Settings
 from ui.styles import FluentDialog, themed_color
 
@@ -52,6 +52,9 @@ class RebuildImageWorker(QThread):
                 env["HTTPS_PROXY"] = self.proxy
                 self._emit_log(f"使用代理: {self.proxy}")
                 self._emit_log("")
+
+            # 构建前同步 Dockerfile 代理助手块，确保镜像内 proxy/noproxy 可用
+            sync_project_dockerfile_proxy(self.project_path, Settings().get_proxy())
 
             if not self._stream_command(
                 compose_cmd + ["build", "--no-cache"],
