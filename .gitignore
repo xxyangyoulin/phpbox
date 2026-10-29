@@ -20,8 +20,8 @@ dist/
 # Debian package
 deb_package/
 
-# Compiled executable
-phpbox
+# Compiled executable (repo root only)
+/phpbox
 
 # Test scripts (development)
 test_*.py

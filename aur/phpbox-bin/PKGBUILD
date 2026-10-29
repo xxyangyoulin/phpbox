@@ -1,7 +1,7 @@
 # Maintainer: xxyangyoulin <xxyangyoulin@outlook.com>
 
 pkgname=phpbox-bin
-pkgver=1.0.18
+pkgver=1.0.21
 pkgrel=1
 pkgdesc='GUI application to manage PHP Docker development environments (PyQt6, Fluent Design)'
 arch=('x86_64')
@@ -15,7 +15,7 @@ source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/phpbox-linux-x
         "phpbox.desktop::$url/raw/v$pkgver/phpbox.desktop"
         "LICENSE::$url/raw/v$pkgver/LICENSE")
 noextract=("LICENSE")
-sha256sums=('e38688d6bfbc66ced0d18b6af1ad0d68875773f0968d21cab19363b9ff9d532b'
+sha256sums=('600c30d44a208447eaa52d7e2fb828d8ae97d6a6f4ec2fc294a7cda5528a0f57'
             '4c8a4eff64d7b49dfd235f93a1b0610919528d1b3b541c60d6f0a2975b48b98d'
             '87c8ce3041afa2de6c78c8a3158050e656ef1f4d436406c22847c8aab191946b')
 
