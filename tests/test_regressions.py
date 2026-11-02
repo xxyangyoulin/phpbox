@@ -293,6 +293,27 @@ class InstallationTests(unittest.TestCase):
 
 
 class MoreTaskTests(unittest.TestCase):
+    def test_runner_is_generated_on_demand_and_not_recreated_after_last_task_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Project('old', Path(tmp))
+            manager = TaskManager([project])
+            runner = manager.get_runner_script(project)
+            manager.ensure_runner_script(project)
+            self.assertFalse(manager.get_project_task_root(project).exists())
+
+            definition = task()
+            manager.save_task(definition)
+            self.assertTrue(runner.is_file())
+            self.assertTrue(os.access(runner, os.X_OK))
+            self.assertIn(definition.id, manager.get_generated_cron_file(project).read_text())
+
+            runner.unlink()
+            manager.delete_task(definition.id)
+            manager.ensure_project_runtime(project)
+            self.assertEqual(manager.load_project_tasks(project), [])
+            self.assertFalse(runner.exists())
+            self.assertNotIn(definition.id, manager.get_generated_cron_file(project).read_text())
+
     def test_task_move_write_failure_keeps_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

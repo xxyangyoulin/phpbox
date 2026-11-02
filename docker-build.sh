@@ -241,7 +241,7 @@ echo ">>> AppImage 构建完成"
 build_deb() {
     echo ">>> 构建 .deb 包..."
 
-    VERSION="${VERSION:-1.0.22}"
+    VERSION="${VERSION:-1.0.23}"
     ARCH="amd64"
 
     # 清理可能存在的旧容器
@@ -335,7 +335,7 @@ show_help() {
     echo "  --help      显示帮助"
     echo ""
     echo "环境变量:"
-    echo "  VERSION     设置版本号 (默认: 1.0.22)"
+    echo "  VERSION     设置版本号 (默认: 1.0.23)"
     echo "  http_proxy  代理设置"
     echo ""
     echo "示例:"

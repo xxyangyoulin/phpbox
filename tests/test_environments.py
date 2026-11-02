@@ -311,6 +311,26 @@ class EnvironmentTests(unittest.TestCase):
         self.assertIn('/workspaces/demo/demo/.phpbox/tasks/run_task.sh', content)
         self.assertIn('/workspaces/other/other/.phpbox/tasks/run_task.sh', content)
 
+    def test_cron_sync_does_not_create_task_files_without_tasks(self):
+        manager = TaskManager([self.project])
+        for environment in (self.first, self.second):
+            self.bind(environment)
+            with patch.object(self.manager, 'running', return_value=False):
+                self.manager.sync_cron(environment)
+            self.assertFalse(manager.get_project_task_root(self.project).exists())
+            self.assertNotIn('run_task.sh', (environment.path / 'scheduler/cron').read_text())
+
+    def test_disabled_task_still_gets_runner_for_manual_execution(self):
+        self.bind()
+        manager = TaskManager([self.project])
+        manager.save_task(task('demo', enabled=False))
+        runner = manager.get_runner_script(self.project)
+        self.assertTrue(runner.is_file())
+        self.assertTrue(os.access(runner, os.X_OK))
+        with patch.object(self.manager, 'running', return_value=False):
+            self.manager.sync_cron(self.first)
+        self.assertNotIn('run_task.sh', (self.first.path / 'scheduler/cron').read_text())
+
     def test_shared_task_runner_rejects_stale_binding_and_records_execution_target(self):
         self.bind()
         manager = TaskManager([self.project])

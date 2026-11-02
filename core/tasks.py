@@ -394,6 +394,8 @@ exit "$EXIT_CODE"
 """
 
     def ensure_runner_script(self, project: Project):
+        if not self.load_project_tasks(project):
+            return
         from core.environment import read_binding, container_workdir, atomic_write
         self.ensure_project_task_dirs(project)
         runner = self.get_runner_script(project)
