@@ -1,5 +1,6 @@
 """全局定时任务中心"""
 import threading
+from contextlib import ExitStack
 import uuid
 from typing import List, Optional
 
@@ -56,6 +57,12 @@ class TaskRuntimeWorker(QThread):
         return result.stdout
 
     def _sync_existing(self, docker):
+        from core.environment import EnvironmentManager, read_binding
+        binding = read_binding(docker.project_path)
+        if binding:
+            manager = EnvironmentManager(self.cancel_event, self.log_line.emit)
+            manager.sync_cron(manager.load(binding['environment_id']))
+            return
         if not docker.has_service("cron"):
             return
         running = self._command(docker, ["ps", "--status", "running", "--format", "{{.Service}}", "cron"])
@@ -63,46 +70,85 @@ class TaskRuntimeWorker(QThread):
             self._command(docker, ["exec", "-T", "cron", "crontab", "/var/www/html/.phpbox/tasks/generated.cron"])
 
     def run(self):
+        from core.environment import EnvironmentManager, read_binding, operation_lock, environment_locks, container_workdir
+        from core.runtime import exec_args
         manager = TaskManager(self.projects)
         project = manager.get_project(self.project_name)
-        docker = None
+        execution = None
+        state = None
         try:
-            if self.cancel_event.is_set():
-                raise InterruptedError("操作已取消")
             if not project:
                 raise ValueError("项目不存在")
-            if self.task is not None:
-                manager.save_task(self.task, self.original_project_name)
-            elif self.action == "delete":
-                manager.delete_task(self.task_id)
-            elif self.action in {"enable", "disable"}:
-                manager.set_task_enabled(self.task_id, self.action == "enable")
-            if self.original_project_name and self.original_project_name != project.name:
+            if self.cancel_event.is_set():
+                raise InterruptedError("操作已取消")
+            affected = {project.name: project}
+            if self.original_project_name:
                 source = manager.get_project(self.original_project_name)
-                self._sync_existing(DockerManager(source.path))
-            docker = DockerManager(project.path)
-            enabled = self.action in {"enable", "run_now"} or (self.task is not None and self.task.enabled)
-            if not enabled:
-                self._sync_existing(docker)
-            else:
-                changes = manager.ensure_project_runtime(project)
-                args = ["up", "-d"]
-                if self.build_if_needed or any(changes.values()):
-                    args.append("--build")
-                    self.build_required.emit(project.name)
-                self._command(docker, args + ["cron"])
-                self._command(docker, ["exec", "-T", "cron", "crontab", "/var/www/html/.phpbox/tasks/generated.cron"])
-                if self.action == "run_now":
-                    self._command(docker, ["exec", "-T", "cron", "setsid",
-                                          "/var/www/html/.phpbox/tasks/run_task.sh", self.task_id, "--manual", self.run_id])
+                if source:
+                    affected[source.name] = source
+            with ExitStack() as locks:
+                for item in sorted(affected.values(), key=lambda p: str(p.path)):
+                    locks.enter_context(operation_lock(item.path))
+                    if (item.path / '.phpbox/switch.json').exists():
+                        raise RuntimeError('项目切换尚未完成，请先恢复')
+                environments = EnvironmentManager(self.cancel_event, self.log_line.emit)
+                bindings = [read_binding(item.path) for item in affected.values()]
+                locks.enter_context(environment_locks([environments.load(b['environment_id']) for b in bindings if b]))
+                if self.task is not None:
+                    if self.original_project_name and self.original_project_name != project.name:
+                        import fcntl
+                        from core.project import get_project_code_path
+                        old_lock = get_project_code_path(source.path, source.name) / '.phpbox/tasks/state' / (self.task.id + '.lock')
+                        if old_lock.exists():
+                            handle = locks.enter_context(old_lock.open('r'))
+                            try:
+                                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            except BlockingIOError:
+                                raise RuntimeError('任务正在执行，请结束后移动所属项目')
+                    manager.save_task(self.task, self.original_project_name)
+                elif self.action == "delete":
+                    manager.delete_task(self.task_id)
+                elif self.action in {"enable", "disable"}:
+                    manager.set_task_enabled(self.task_id, self.action == "enable")
+                binding = read_binding(project.path)
+                docker = DockerManager(project.path)
+                enabled = self.action in {'enable', 'run_now'} or (self.task is not None and self.task.enabled)
+                if binding:
+                    environment = environments.load(binding['environment_id'])
+                    if enabled and not binding['enabled']:
+                        raise RuntimeError('项目已停止；任务已保存，启动项目后恢复调度')
+                    if enabled and not environments.running(environment):
+                        environments._start(environment)
+                    manager.ensure_runner_script(project)
+                elif enabled:
+                    changes = manager.ensure_project_runtime(project)
+                    args = ['up', '-d']
+                    if self.build_if_needed or any(changes.values()):
+                        args.append('--build')
+                        self.build_required.emit(project.name)
+                    self._command(docker, args + ['cron'])
+                for item in affected.values():
+                    self._sync_existing(DockerManager(item.path))
+                if self.action == 'run_now':
+                    directory = container_workdir(project.path) if binding else '/var/www/html'
+                    state = directory + '/.phpbox/tasks/state/' + self.run_id
+                    execution = exec_args(project.path, 'cron', [], user='root')
+            # 执行目标在放开切换锁前确定；运行器再次核对绑定，取消时使用同一目标。
+            if execution:
+                result = run_process(execution + ['setsid', directory + '/.phpbox/tasks/run_task.sh',
+                    self.task_id, '--manual', self.run_id], cwd=str(project.path),
+                    cancel=self.cancel_event, on_output=self.log_line.emit, timeout=3600)
+                if result.returncode:
+                    raise RuntimeError(result.stdout[-2000:] or '任务执行失败')
             self.task_finished.emit(self.action, True, "", project.name)
         except Exception as exc:
-            if self.action == "run_now" and docker is not None and isinstance(exc, (InterruptedError, TimeoutError)):
-                state = f"/var/www/html/.phpbox/tasks/state/{self.run_id}"
+            if execution and isinstance(exc, (InterruptedError, TimeoutError)):
                 try:
-                    result = run_process(docker.get_compose_command() + ["exec", "-T", "cron", "sh", "-c",
-                        'touch "$1.cancel"; if [ -f "$1.pid" ]; then /bin/kill -TERM -- "-$(cat "$1.pid")"; fi',
-                        "sh", state], cwd=str(project.path), timeout=15)
+                    result = run_process(execution + ['sh', '-c',
+                        'touch "$1.cancel"; if [ -f "$1.pid" ]; then p=$(cat "$1.pid"); '
+                        'if [ -r "/proc/$p/cmdline" ] && tr "\\0" " " <"/proc/$p/cmdline" | grep -Fq "$2"; '
+                        'then /bin/kill -TERM -- "-$p"; fi; fi',
+                        'sh', state, self.run_id], cwd=str(project.path), timeout=15)
                     if result.returncode:
                         raise RuntimeError(result.stdout)
                 except Exception as cleanup_error:

@@ -25,8 +25,9 @@ from core.project import (
     ProjectManager, get_port_usage, find_available_port,
     get_project_code_dir_name,
 )
-from core.proxy import detect_system_proxy, convert_proxy_for_docker, build_dockerfile_proxy_snippet
+from core.proxy import detect_system_proxy, convert_proxy_for_docker
 from core.process import run_process
+from core.templates import generate_dockerfile
 from ui.worker import register_worker
 from core.docker import DockerManager
 from core.settings import Settings
@@ -224,12 +225,13 @@ class BuildWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str, list)  # success, message, logs
 
-    def __init__(self, project_path: Path, proxy: str = None, prepare=None, finalize=None, dialog=None):
+    def __init__(self, project_path: Path, proxy: str = None, prepare=None, finalize=None, dialog=None, skip_build=False):
         super().__init__()
         self.project_path = project_path
         self.prepare = prepare
         self.finalize = finalize
         self.proxy = proxy
+        self.skip_build = skip_build
         self.logs = []
         self.cancel_event = threading.Event()
         register_worker(self, f"{project_path.name} · 创建项目", dialog=dialog)
@@ -248,10 +250,11 @@ class BuildWorker(QThread):
             command = DockerManager(self.project_path).get_compose_command()
             if not command:
                 raise RuntimeError("未检测到 Docker Compose")
-            result = run_process(command + ["build"], cwd=str(self.project_path), env=env,
-                                 cancel=self.cancel_event, on_output=self.progress.emit, timeout=3600)
-            if result.returncode:
-                raise RuntimeError(result.stdout[-2000:])
+            if not self.skip_build:
+                result = run_process(command + ["build"], cwd=str(self.project_path), env=env,
+                                     cancel=self.cancel_event, on_output=self.progress.emit, timeout=3600)
+                if result.returncode:
+                    raise RuntimeError(result.stdout[-2000:])
             if self.finalize:
                 self.progress.emit("正在复制配置并启动服务...")
                 self.finalize(self.cancel_event)
@@ -394,6 +397,21 @@ class CreateProjectDialog(FluentDialog):
         self.name_input.textChanged.connect(self.check_port)
         name_row.addWidget(self.name_input, 1)
         bc_layout.addLayout(name_row)
+
+        from core.environment import EnvironmentManager
+        environment_row = QHBoxLayout()
+        environment_row.addWidget(BodyLabel('PHP 环境'))
+        self.environment_combo = ComboBox()
+        self.environments = EnvironmentManager().list()
+        for environment in self.environments:
+            self.environment_combo.addItem(environment.name + ' · PHP ' + environment.php_version, userData=environment.id)
+        self.environment_combo.addItem('独立 PHP（原有模式）', userData=None)
+        environment_row.addWidget(self.environment_combo, 1)
+        new_environment = PushButton('新建共享环境')
+        new_environment.clicked.connect(self.create_environment)
+        environment_row.addWidget(new_environment)
+        bc_layout.addLayout(environment_row)
+        self.environment_combo.currentIndexChanged.connect(self.environment_changed)
 
         # PHP 版本
         php_row = QHBoxLayout()
@@ -645,7 +663,8 @@ class CreateProjectDialog(FluentDialog):
         card_layout.setSpacing(12)
         card_layout.setContentsMargins(20, 20, 20, 20)
 
-        hint = CaptionLabel("选择需要预装的 PHP 扩展，后续也可在容器内安装")
+        self.extensions_hint = CaptionLabel("选择需要预装的 PHP 扩展，后续也可在容器内安装")
+        hint = self.extensions_hint
         hint.setStyleSheet("color: #64748b;")
         card_layout.addWidget(hint)
 
@@ -653,7 +672,30 @@ class CreateProjectDialog(FluentDialog):
         card_layout.addWidget(self.ext_selector)
 
         layout.addWidget(card, 1)
+        self.environment_changed()
         return page
+
+    def create_environment(self):
+        from ui.environments import EnvironmentEditor
+        self.environment_editor = EnvironmentEditor(self)
+        self.environment_editor.saved.connect(self.environment_created)
+        self.environment_editor.show()
+
+    def environment_created(self, environment):
+        self.environments.append(environment)
+        self.environment_combo.addItem(environment.name + ' · PHP ' + environment.php_version, userData=environment.id)
+        self.environment_combo.setCurrentIndex(self.environment_combo.count() - 1)
+
+    def environment_changed(self, *args):
+        if not hasattr(self, 'ext_selector'):
+            return
+        env = next((e for e in self.environments if e.id == self.environment_combo.currentData()), None)
+        self.php_combo.setEnabled(env is None)
+        self.ext_selector.setEnabled(env is None)
+        self.extensions_hint.setText('使用所选共享环境的扩展；修改扩展请前往 PHP 环境管理。' if env else '选择独立 PHP 容器需要预装的扩展。')
+        if env:
+            self.php_combo.setCurrentText(env.php_version)
+            self.ext_selector.set_selected(env.extensions)
 
     def _switch_to(self, step: int):
         self._current_step = step
@@ -825,6 +867,7 @@ class CreateProjectDialog(FluentDialog):
         proxy = self.proxy_input.text().strip()
         framework = self._selected_framework
         src_path = Path(src_dir) if is_import else None
+        environment = next((e for e in self.environments if e.id == self.environment_combo.currentData()), None)
 
         # 保存项目名用于创建成功后选中
         self._creating_project_name = name
@@ -856,13 +899,20 @@ class CreateProjectDialog(FluentDialog):
         def finalize(cancel):
             if cancel.is_set():
                 raise InterruptedError("创建已取消")
-            self.copy_configs(project_path)
+            if environment:
+                from core.runtime import ProjectRuntime
+                docker = DockerManager(project_path, cancel=cancel)
+                if not docker.copy_config_from_image('nginx:alpine', '/etc/nginx/nginx.conf', project_path / 'nginx/nginx.conf'):
+                    raise RuntimeError('复制 Nginx 配置失败')
+                ProjectRuntime(project_path, cancel, self.build_worker.progress.emit).switch(environment, new_project=True)
+            else:
+                self.copy_configs(project_path)
             if cancel.is_set():
                 raise InterruptedError("创建已取消")
             result = DockerManager(project_path, cancel=cancel).up()
             if not result.success:
                 raise RuntimeError(result.error)
-        self.build_worker = BuildWorker(project_path, proxy, prepare, finalize, dialog=self.progress_dialog)
+        self.build_worker = BuildWorker(project_path, proxy, prepare, finalize, dialog=self.progress_dialog, skip_build=environment is not None)
         self.build_worker.progress.connect(self._on_build_progress)
         self.build_worker.finished.connect(self._on_build_finished)
         self.progress_dialog.rejected.connect(self._on_progress_dialog_rejected)
@@ -881,7 +931,7 @@ class CreateProjectDialog(FluentDialog):
             (project_path / subdir).mkdir(parents=True, exist_ok=True)
 
         # 生成 Dockerfile
-        dockerfile = self.generate_dockerfile(project_name, php_version, extensions, proxy)
+        dockerfile = generate_dockerfile(project_name, php_version, extensions, proxy)
         (project_path / "Dockerfile").write_text(dockerfile)
 
         # 写入容器内 proxy/noproxy 助手块（构建期进镜像，使容器内可用 proxy 命令）
@@ -984,142 +1034,6 @@ class CreateProjectDialog(FluentDialog):
             ])
 
         return "\n".join(lines) + "\n"
-
-    def generate_dockerfile(self, project_name: str, php_version: str,
-                            extensions: List[str], proxy: str) -> str:
-        """生成 Dockerfile 内容"""
-        lines = [f"FROM php:{php_version}-fpm", ""]
-
-        # 用户构建参数
-        lines.extend([
-            "# 用户 UID/GID 构建参数",
-            "ARG USER_UID=1000",
-            "ARG USER_GID=1000",
-            "",
-        ])
-
-        # 代理配置
-        docker_proxy = convert_proxy_for_docker(proxy) if proxy else None
-        if docker_proxy:
-            lines.extend([
-                "# 构建时代理（仅 build 阶段生效）",
-                "ARG HTTP_PROXY",
-                "ARG HTTPS_PROXY",
-                'ENV http_proxy=${HTTP_PROXY}',
-                'ENV https_proxy=${HTTPS_PROXY}',
-                'ENV HTTP_PROXY=${HTTP_PROXY}',
-                'ENV HTTPS_PROXY=${HTTPS_PROXY}',
-                "",
-            ])
-
-        lines.extend([
-            "# install-php-extensions 自动处理各 PHP 版本扩展兼容性",
-            "ADD https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/",
-            "RUN chmod +x /usr/local/bin/install-php-extensions",
-            "",
-            "# 安装 Composer",
-            "COPY --from=composer:latest /usr/bin/composer /usr/bin/composer",
-            "",
-        ])
-
-        # PHP 7.2 特殊处理
-        if php_version == "7.2":
-            lines.extend([
-                "# Debian Buster 官方源已 EOL，切换归档源",
-                'RUN echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list && \\',
-                '    echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list',
-                "",
-            ])
-
-        lines.extend([
-            "# 安装基础工具 (包含 git, openssh-client, zsh, cron)",
-            "RUN apt-get update && apt-get install -y unzip git openssh-client zsh curl wget sudo cron && rm -rf /var/lib/apt/lists/*",
-            "",
-            "# 创建用户 (与宿主机 UID/GID 一致)",
-            "RUN groupadd -g ${USER_GID} user && \\",
-            "    useradd -m -u ${USER_UID} -g ${USER_GID} -s /bin/zsh user && \\",
-            "    echo 'user ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers",
-            "",
-            "# 设置用户环境变量",
-            "ENV HOME=/home/user",
-            "ENV USER=user",
-            "",
-            "# Composer 缓存目录",
-            "ENV COMPOSER_HOME=/home/user/.composer",
-            "RUN mkdir -p ${COMPOSER_HOME} && chown -R user:user ${COMPOSER_HOME}",
-            "",
-            "# SSH 目录 (用于访问私有 Git 仓库)",
-            "RUN mkdir -p /home/user/.ssh && chmod 700 /home/user/.ssh && chown user:user /home/user/.ssh",
-            "",
-            "# 为用户安装 Oh My Zsh",
-            "USER user",
-            "WORKDIR /home/user",
-            'RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" || true',
-            "",
-            "# 安装 zsh 插件",
-            "RUN git clone https://github.com/paulirish/git-open.git ~/.oh-my-zsh/custom/plugins/git-open && \\",
-            "    git clone https://github.com/zsh-users/zsh-autosuggestions ~/.oh-my-zsh/custom/plugins/zsh-autosuggestions && \\",
-            "    git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting",
-            "",
-            "# 配置 zsh 插件",
-            'RUN sed -i "s/plugins=(git)/plugins=(git git-open z zsh-autosuggestions zsh-syntax-highlighting extract command-not-found copypath)/" ~/.zshrc',
-            "",
-            "# 自定义提示符 - 显示项目名称",
-            f'RUN echo \'# 自定义提示符\\n'
-            f'export PROJECT_NAME="{project_name}"\\n'
-            f'PROMPT="%{{\\033[38;5;39m%}}$PROJECT_NAME %{{\\033[38;5;208m%}}➜%{{\\033[0m%}}  %{{\\033[38;5;81m%}}%c%{{\\033[0m%}} "\' >> ~/.zshrc',
-            "",
-            "# 代理快捷命令",
-            build_dockerfile_proxy_snippet(proxy),
-            "",
-            "# 禁用 Oh My Zsh 自动更新",
-            'RUN sed -i "s/# DISABLE_AUTO_UPDATE/DISABLE_AUTO_UPDATE/" ~/.zshrc && \\',
-            '    echo "DISABLE_AUTO_UPDATE=true" >> ~/.zshrc',
-            "",
-            "# 切回 root 用户，运行时由 docker-compose 指定用户",
-            "USER root",
-            "WORKDIR /var/www/html",
-        ])
-
-        # 扩展安装
-        if extensions:
-            lines.extend(["", "# 安装 PHP 扩展"])
-            install_lines = self.generate_ext_install_lines(extensions)
-            lines.extend(install_lines)
-
-        # 清除代理
-        if docker_proxy:
-            lines.extend([
-                "",
-                "# 清除代理，避免运行时影响业务",
-                "ENV http_proxy=''",
-                "ENV https_proxy=''",
-                "ENV HTTP_PROXY=''",
-                "ENV HTTPS_PROXY=''",
-            ])
-
-        return "\n".join(lines) + "\n"
-
-    def generate_ext_install_lines(self, extensions: List[str]) -> List[str]:
-        """生成扩展安装命令"""
-        # 优先安装的扩展
-        priority = ["igbinary", "msgpack"]
-
-        priority_exts = []
-        normal_exts = []
-
-        for ext in extensions:
-            if ext in priority:
-                priority_exts.append(ext)
-            else:
-                normal_exts.append(ext)
-
-        lines = []
-        if priority_exts:
-            lines.append(f"RUN install-php-extensions {' '.join(priority_exts)}")
-        if normal_exts:
-            lines.append(f"RUN install-php-extensions {' '.join(normal_exts)}")
-        return lines
 
     def _build_mysql_config(self, project_name: str) -> Optional[dict]:
         if not self.mysql_enabled_cb.isChecked():

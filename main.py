@@ -26,6 +26,7 @@ from core.logger import logger
 from core.project import ProjectManager, get_project_code_path
 from core.docker import DockerManager, collect_environment_diagnostics
 from core.settings import Settings
+from core.runtime import exec_args
 
 
 _SUPPRESSED_QT_WARNINGS = (
@@ -153,12 +154,14 @@ def _print_action_result(result, success_message: str) -> int:
 
 
 def _resolve_container_workdir(project, cwd: Path) -> str:
+    from core.environment import read_binding, container_workdir
+    base = container_workdir(project.path) if read_binding(project.path) else "/var/www/html"
     code_path = get_project_code_path(project.path, project.name)
     try:
         relative = cwd.resolve().relative_to(code_path.resolve())
     except ValueError:
-        return "/var/www/html"
-    return "/var/www/html" if str(relative) == "." else f"/var/www/html/{relative.as_posix()}"
+        return base
+    return base if str(relative) == "." else f"{base}/{relative.as_posix()}"
 
 
 def _run_project_command(project, command_name: str, command_args) -> int:
@@ -174,7 +177,7 @@ def _run_project_command(project, command_name: str, command_args) -> int:
     inner_command = " && ".join([inner_parts[0], " ".join(inner_parts[1:])])
 
     result = subprocess.run(
-        compose_cmd + ["exec", "php", "sh", "-lc", inner_command],
+        exec_args(project.path, "php", ["sh", "-lc", inner_command], tty=sys.stdin.isatty()),
         cwd=str(project.path)
     )
     return result.returncode
@@ -198,7 +201,7 @@ def _run_project_shell(project, service: str) -> int:
         shell_command = "if command -v sh >/dev/null 2>&1; then exec sh; else exec ash; fi"
 
     result = subprocess.run(
-        compose_cmd + ["exec", service, "sh", "-lc", shell_command],
+        exec_args(project.path, service, ["sh", "-lc", shell_command], tty=sys.stdin.isatty()),
         cwd=str(project.path)
     )
     return result.returncode
@@ -222,13 +225,9 @@ def _run_project_exec(project, service: str, command_args) -> int:
         print("请提供要执行的命令，例如 `phpbox exec php -- php -v`。", file=sys.stderr)
         return 1
 
-    exec_args = compose_cmd + ["exec"]
-    if service == "php":
-        exec_args.extend(["-w", _resolve_container_workdir(project, Path.cwd())])
-    exec_args.append(service)
-    exec_args.extend(args)
-
-    result = subprocess.run(exec_args, cwd=str(project.path))
+    command = exec_args(project.path, service, args, tty=sys.stdin.isatty(),
+                        workdir=_resolve_container_workdir(project, Path.cwd()) if service == "php" else None)
+    result = subprocess.run(command, cwd=str(project.path))
     return result.returncode
 
 
@@ -424,7 +423,12 @@ def main():
         parser.error(f"unrecognized arguments: {' '.join(unknown_args)}")
 
     if args.command:
-        sys.exit(_run_cli(args))
+        try:
+            result = _run_cli(args)
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(str(exc), file=sys.stderr)
+            result = 1
+        sys.exit(result)
 
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtCore import Qt, QSettings, qInstallMessageHandler

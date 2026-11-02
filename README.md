@@ -3,7 +3,7 @@
 在 Linux 上做 PHP 开发，最麻烦的通常不是写代码，而是维护环境：
 不同项目要不同的 PHP 版本，不同扩展组合，日志、容器、端口、Xdebug 和构建过程又分散在一堆 Docker 命令里。
 
-`phpbox` 用 Docker 为每个项目提供独立运行环境，并通过 GUI 和 CLI 把项目管理、命令执行、日志查看、镜像构建和调试入口统一起来。
+`phpbox` 用 Docker 管理 PHP 开发环境。多个项目可以共享一个 PHP 环境，也可以使用各自的独立环境；GUI 和 CLI 统一提供项目管理、命令执行、日志和构建入口。
 
 ![Python](https://img.shields.io/badge/python-3.8+-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -15,6 +15,7 @@
 - 支持 PHP `7.2` 到 `8.4`
 - 支持 `60+` PHP 扩展
 - 图形化创建、管理、启动、停止项目
+- 共享 PHP 环境、项目环境切换；同版本允许创建多套配置
 - 内置 Xdebug 配置能力
 - 支持查看日志、进入容器、执行命令
 - 支持 Wayland 与 X11 环境
@@ -43,6 +44,39 @@ CI 覆盖 Python 3.8、3.14 以及 offscreen、X11、Wayland 启动，发布前�
 ```bash
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
 ```
+
+真实 Docker 验收会创建临时项目、网络和镜像，并在结束时清理这些 Docker 资源：
+
+```bash
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m tests.integration_environments
+# 网络需要代理时，可额外设置 PHPBOX_TEST_PROXY=http://127.0.0.1:7890
+```
+
+也可以手动运行 GitHub Actions 中的 `PHP environments integration` 工作流。
+
+## 共享 PHP 环境
+
+1. 在侧边栏打开 **PHP 环境 → 新建环境**，填写名称，选择 PHP 版本、扩展和可选构建代理。
+2. 创建项目时选择已有环境。两个项目选择同一环境时，使用同一个 PHP 容器；Nginx 和可选数据库仍由各项目管理。
+3. 在项目页右上角的 **三点菜单** 中点击 **切换 PHP 环境**，选择目标、检查环境并确认；同一菜单的 **管理 PHP 环境** 可打开环境管理页。已运行的环境之间切换不重建 PHP 容器；目标未启动时会先启动。
+
+环境保存于 `~/php-dev/environments/<环境 ID>/`，名称修改不影响容器身份。同版本需要不同配置时新建另一个环境。环境只使用一套 PHP-FPM 配置，不划分项目 FPM pool。PHP 配置、Xdebug 配置、扩展和重建均在环境页操作，应用前显示所有受影响项目。
+
+共享环境与普通项目复用同一套镜像模板，包括对应 PHP 版本的 `php.ini-development` 默认配置、Composer、Oh My Zsh 和终端插件，以及 `proxy` / `noproxy` / `ckproxy` 快捷命令。环境的 `php/php.ini` 用于覆盖默认参数；迁移项目不会自动导入旧项目的 PHP 配置，重建也不会覆盖已有环境配置。旧环境更新应用后需在环境页重建一次才能获得新增工具和默认配置。
+
+构建代理会转换为容器可访问的宿主机地址，运行时代理变量默认清空。在终端执行 `proxy` 可手动启用环境中配置的代理，`noproxy` 关闭；修改环境代理地址会重建以更新快捷命令。
+
+切换会检查目标 PHP 环境运行状态、实际版本、代码可见性、常见缓存目录权限和 Nginx 路由，不根据 `composer.json` 或 `composer.lock` 中的 PHP、扩展要求阻止切换。不会运行 Composer，也不会修改应用的 `.env`、Composer 配置、锁文件或 `vendor`。
+
+`pbox php`、`composer`、`exec php` 和新开的容器终端会使用当前绑定以及项目实际目录。已经打开的终端请重新打开。PHP / Cron 引擎日志属于共享环境；应用日志、Nginx 和任务日志仍归各项目所有。
+
+**现有独立项目需要显式迁移。** 切换弹窗会展示容器路径、扩展、配置和数据库地址变化。首次迁移会重建该项目的 Nginx，保留数据库容器和数据卷；自定义 Dockerfile、特殊挂载或启动配置不会被自动转换。原配置及镜像身份保存在项目的 `.phpbox/independent-backup.json`。
+
+共享 PHP 使用 `/workspaces/<项目>/<代码目录>`。MySQL / Redis 必须使用预览列出的唯一地址，例如 `mysql-<项目 ID>` 和 `redis-<项目 ID>`；不要继续使用共享网络里有歧义的 `mysql` 或 `redis`。PHPBox 将这些地址写入管理文件 `.env.phpbox`，应用自己的连接配置需要相应调整。
+
+定时任务由环境内的 Cron 调度，关闭桌面应用后仍然执行。停止项目会禁用后续调度；切换前已经开始的任务继续在原环境执行，取消操作仍指向原容器。有活动任务时不能停止或重建环境，绑定中的环境不能删除。切换失败会恢复原配置；若程序异常退出留下切换记录，在切换弹窗选择 **恢复原环境** 后继续操作。
+
+共享环境可以访问所有项目代码，并共享进程权限和资源，适用于同一用户的可信本地项目。需要隔离的项目应继续使用独立模式。
 
 ## 安装与运行
 

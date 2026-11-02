@@ -20,6 +20,7 @@ from core.project import Project, ProjectManager, get_project_code_path
 from core.proxy import build_shell_proxy_block, convert_proxy_for_docker, validate_proxy_url
 from core.tasks import TaskDefinition, TaskManager
 from ui.dialogs.create_project import CreateProjectDialog
+from core.templates import generate_dockerfile
 from ui.dialogs.php_config_dialog import PhpConfigDialog
 from ui.dialogs.task_center import TaskRuntimeWorker
 from ui.main_window import ProjectDashboardPage
@@ -65,7 +66,7 @@ class ProjectTests(unittest.TestCase):
         original = (self.old / 'docker-compose.yml').read_bytes()
         with patch('core.project.DockerManager') as factory:
             factory.return_value.down.return_value = DockerResult(True)
-            factory.return_value._run_command.side_effect = [DockerResult(True, 'php\n'), DockerResult(False, error='failed'), DockerResult(True)]
+            factory.return_value._run_command.side_effect = [DockerResult(True, 'php\n'), DockerResult(True), DockerResult(False, error='failed'), DockerResult(True), DockerResult(True)]
             self.assertFalse(self.manager.rename_project(self.project, 'new'))
         self.assertEqual((self.old / 'docker-compose.yml').read_bytes(), original)
         self.assertTrue((self.old / 'old' / 'index.php').exists())
@@ -129,12 +130,10 @@ class BoundaryTests(unittest.TestCase):
                 self.assertIn('HTTP_PROXY: "http://172.17.0.1:7890"', compose)
 
     def test_extension_generation_uses_installer_compatibility_rules(self):
-        generator = SimpleNamespace(generate_ext_install_lines=lambda extensions:
-            CreateProjectDialog.generate_ext_install_lines(None, extensions))
         extensions = ['redis', 'xdebug', 'swoole', 'grpc', 'protobuf', 'igbinary', 'msgpack']
         for version in ['7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4']:
             with self.subTest(php=version):
-                dockerfile = CreateProjectDialog.generate_dockerfile(generator, 'demo', version, extensions, '')
+                dockerfile = generate_dockerfile('demo', version, extensions, '')
                 commands = [line for line in dockerfile.splitlines() if line.startswith('RUN install-php-extensions ')]
                 self.assertEqual(commands, [
                     'RUN install-php-extensions igbinary msgpack',
@@ -188,8 +187,15 @@ class BoundaryTests(unittest.TestCase):
 
 
 class TaskTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        for name in ('old', 'new'):
+            (self.root / name).mkdir()
+
     def test_disable_reload_failure_is_reported(self):
-        project = Project('old', Path('/tmp/old'))
+        project = Project('old', self.root / 'old')
         worker = TaskRuntimeWorker([project], 'old', 'disable', task_id='abc123')
         results = []
         worker.task_finished.connect(lambda *args: results.append(args))
@@ -201,7 +207,7 @@ class TaskTests(unittest.TestCase):
         self.assertIn('reload failed', results[0][2])
 
     def test_move_syncs_both_projects(self):
-        projects = [Project('old', Path('/tmp/old')), Project('new', Path('/tmp/new'))]
+        projects = [Project('old', self.root / 'old'), Project('new', self.root / 'new')]
         worker = TaskRuntimeWorker(projects, 'new', 'save', task=task('new', False), original_project_name='old')
         with patch('ui.dialogs.task_center.TaskManager') as manager, patch('ui.dialogs.task_center.DockerManager'), patch.object(worker, '_sync_existing') as sync:
             manager.return_value.get_project.side_effect = lambda name: projects[0 if name == 'old' else 1]

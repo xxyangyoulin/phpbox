@@ -80,6 +80,9 @@ class TaskExecutionState:
     last_exit_code: Optional[int] = None
     last_status: str = ""
     last_log_file: str = ""
+    environment_id: str = ""
+    container_id: str = ""
+    run_id: str = ""
 
     @classmethod
     def from_dict(cls, task_id: str, data: dict) -> "TaskExecutionState":
@@ -97,6 +100,9 @@ class TaskExecutionState:
             last_exit_code=exit_code,
             last_status=str(data.get("last_status") or ""),
             last_log_file=str(data.get("last_log_file") or ""),
+            environment_id=str(data.get('environment_id') or ''),
+            container_id=str(data.get('container_id') or ''),
+            run_id=str(data.get('run_id') or ''),
         )
 
     def to_dict(self) -> dict:
@@ -107,6 +113,9 @@ class TaskExecutionState:
             "last_exit_code": self.last_exit_code,
             "last_status": self.last_status,
             "last_log_file": self.last_log_file,
+            "environment_id": self.environment_id,
+            "container_id": self.container_id,
+            "run_id": self.run_id,
         }
 
 
@@ -277,7 +286,7 @@ set -eu
 
 TASK_ID="$1"
 MODE="${2:-scheduled}"
-RUN_ID="${3:-scheduled-$$}"
+RUN_ID="${3:-scheduled-$(cat /proc/sys/kernel/random/uuid)}"
 TASK_ROOT="/var/www/html/.phpbox/tasks"
 TASK_FILE="$TASK_ROOT/tasks.json"
 LOG_ROOT="$TASK_ROOT/logs"
@@ -287,8 +296,11 @@ mkdir -p "$LOG_ROOT" "$STATE_ROOT"
 case "$TASK_ID:$RUN_ID" in *[!a-zA-Z0-9_:-]*) exit 1 ;; esac
 exec 9>"$STATE_ROOT/$TASK_ID.lock"
 flock -n 9 || { echo "任务已在执行，本次跳过"; exit 0; }
+# PHPBOX_BINDING_GUARD
 echo "$$" > "$STATE_ROOT/$RUN_ID.pid"
-trap 'rm -f "$STATE_ROOT/$RUN_ID.pid" "$STATE_ROOT/$RUN_ID.cancel"' EXIT
+echo "${PHPBOX_ENVIRONMENT_ID:-}" > "$STATE_ROOT/$RUN_ID.environment"
+if [ -n "${PHPBOX_ENVIRONMENT_ID:-}" ]; then flock -u 8; exec 8<&-; fi
+trap 'rm -f "$STATE_ROOT/$RUN_ID.pid" "$STATE_ROOT/$RUN_ID.cancel" "$STATE_ROOT/$RUN_ID.environment"' EXIT
 if [ -f "$STATE_ROOT/$RUN_ID.cancel" ]; then exit 130; fi
 
 clean_old_logs() {
@@ -337,11 +349,14 @@ $payload = [
     "last_log_file" => $argv[5],
     "last_run_at" => $argv[6],
     "last_finished_at" => $argv[7],
+    "environment_id" => getenv("PHPBOX_ENVIRONMENT_ID") ?: "",
+    "container_id" => gethostname(),
+    "run_id" => $argv[8],
 ];
 $tmp = $stateFile . "." . getmypid() . ".tmp";
 file_put_contents($tmp, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . PHP_EOL);
 rename($tmp, $stateFile);
-' "$STATE_ROOT/$TASK_ID.json" "$TASK_ID" "$status" "$exit_code" "$log_file" "$started_at" "$finished_at"
+' "$STATE_ROOT/$TASK_ID.json" "$TASK_ID" "$status" "$exit_code" "$log_file" "$started_at" "$finished_at" "$RUN_ID"
 }
 
 clean_old_logs
@@ -358,7 +373,9 @@ TASK_LOG_DIR="$LOG_ROOT/$TASK_ID"
 mkdir -p "$TASK_LOG_DIR"
 chown --reference="$TASK_ROOT" "$TASK_LOG_DIR" "$LOG_ROOT" "$STATE_ROOT"
 LOG_FILE="$(mktemp "$TASK_LOG_DIR/$TIMESTAMP-XXXXXX.log")"
+chown --reference="$TASK_ROOT" "$LOG_FILE"
 STARTED_AT="$(date '+%Y-%m-%dT%H:%M:%S%z')"
+write_state "running" 0 "$LOG_FILE" "$STARTED_AT" ""
 
 set +e
 su -s /bin/sh "$TASK_USER" --session-command "cd /var/www/html && $TASK_COMMAND" 9>&- >"$LOG_FILE" 2>&1
@@ -377,9 +394,25 @@ exit "$EXIT_CODE"
 """
 
     def ensure_runner_script(self, project: Project):
+        from core.environment import read_binding, container_workdir, atomic_write
         self.ensure_project_task_dirs(project)
         runner = self.get_runner_script(project)
-        runner.write_text(self.build_runner_script_content(), encoding="utf-8")
+        content = self.build_runner_script_content()
+        if read_binding(project.path):
+            directory = container_workdir(project.path)
+            management = '/'.join(directory.split('/')[:-1]) + '/.phpbox'
+            guard = '''exec 8</phpbox/scheduler/gate
+flock -s 8
+[ ! -f /phpbox/scheduler/maintenance ] || exit 0
+php -r '
+if (file_exists($argv[1] . "/switch.json")) { exit(1); }
+$b = json_decode(file_get_contents($argv[1] . "/project.json"), true);
+exit(!empty($b["enabled"]) && ($b["environment_id"] ?? "") === getenv("PHPBOX_ENVIRONMENT_ID") ? 0 : 1);
+' ''' + self.shell_quote(management) + ' || exit 0'
+            content = content.replace('/var/www/html', directory).replace('# PHPBOX_BINDING_GUARD', guard)
+        else:
+            content = content.replace('# PHPBOX_BINDING_GUARD', '')
+        atomic_write(runner, content)
         runner.chmod(0o755)
 
     @staticmethod
@@ -423,9 +456,12 @@ exit "$EXIT_CODE"
 """
 
     def ensure_project_runtime(self, project: Project) -> Dict[str, bool]:
+        from core.environment import read_binding
         self.ensure_project_task_dirs(project)
         self.ensure_runner_script(project)
         self.write_generated_cron(project, self.load_project_tasks(project))
+        if read_binding(project.path):
+            return {'dockerfile_changed': False, 'compose_changed': False}
         dockerfile_changed = self._ensure_dockerfile_has_cron(project)
         compose_changed = self._ensure_compose_has_cron(project)
         return {

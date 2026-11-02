@@ -106,6 +106,7 @@ class ExtensionSelector(QWidget):
         self.checkboxes = {}        # {ext_id: CheckBox}
         self.category_widgets = {}  # {category_name: CollapsibleCategory}
         self.setup_ui()
+        self._update_all_category_counts()
 
     def setup_ui(self):
         layout = QVBoxLayout(self)

@@ -46,18 +46,29 @@ class Project:
     mysql_running: bool = False
     redis_running: bool = False
     cron_running: bool = False
+    environment_id: Optional[str] = None
+    environment_name: str = ""
+    runtime_error: str = ""
     auto_restart: bool = True  # 是否开机自启
 
     @property
     def status_text(self) -> str:
+        if self.runtime_error:
+            return '需要处理'
         if self.health_status == "healthy":
             return "运行中"
+        if self.health_status == 'stopped':
+            return '已停止'
         if self.php_running or self.nginx_running or self.mysql_running or self.redis_running or self.cron_running:
             return "部分运行"
         return "已停止"
 
     @property
     def health_status(self) -> str:
+        if self.runtime_error:
+            return 'partial'
+        if self.environment_id and not self.nginx_running and not self.mysql_running and not self.redis_running:
+            return "stopped"
         services = ["php", "nginx"] + [name for name in ("mysql", "redis", "cron") if self.has_service(name)]
         if all(getattr(self, name + "_running") for name in services):
             return "healthy"
@@ -95,6 +106,7 @@ class ProjectManager:
     def __init__(self):
         ensure_base_dir()
         self._running_containers: Set[str] = set()
+        self._unhealthy_containers: Set[str] = set()
         self._running_containers_ts: float = 0
 
     def get_all_projects(self) -> List[Project]:
@@ -116,6 +128,13 @@ class ProjectManager:
         if not compose_file.exists():
             return None
 
+        from core.environment import read_binding, EnvironmentManager
+        binding = None
+        runtime_error = ''
+        try:
+            binding = read_binding(path)
+        except (OSError, ValueError) as exc:
+            runtime_error = str(exc)
         name = path.name
         php_version = self._get_php_version(path)
         port = self._get_port(path)
@@ -123,7 +142,21 @@ class ProjectManager:
         nginx_running = self._check_service_running(path, "nginx")
         mysql_running = self._check_service_running(path, "mysql")
         redis_running = self._check_service_running(path, "redis")
-        is_running = php_running and nginx_running
+        environment_name = ""
+        if binding:
+            try:
+                environment = EnvironmentManager().load(binding['environment_id'])
+                environment_name = environment.name
+                php_version = environment.php_version
+                php_running = environment.container in self._running_containers
+                if environment.container in self._unhealthy_containers:
+                    runtime_error = '共享 PHP 环境健康检查失败'
+            except (OSError, ValueError) as exc:
+                php_running = False
+                runtime_error = str(exc)
+        if (path / '.phpbox/switch.json').exists():
+            runtime_error = "环境切换未完成，请恢复原环境"
+        is_running = php_running and nginx_running and not runtime_error
         auto_restart = self._get_auto_restart(path)
 
         return Project(
@@ -136,7 +169,10 @@ class ProjectManager:
             nginx_running=nginx_running,
             mysql_running=mysql_running,
             redis_running=redis_running,
-            cron_running=self._check_service_running(path, "cron"),
+            cron_running=php_running if binding else self._check_service_running(path, "cron"),
+            environment_id=binding['environment_id'] if binding else None,
+            environment_name=environment_name,
+            runtime_error=runtime_error,
             auto_restart=auto_restart
         )
 
@@ -163,7 +199,7 @@ class ProjectManager:
 
         try:
             content = compose_file.read_text()
-            match = re.search(r'"(\d+):80"', content)
+            match = re.search(r'(\d+):80\b', content)
             if match:
                 return match.group(1)
         except Exception:
@@ -192,15 +228,18 @@ class ProjectManager:
             return
         try:
             result = subprocess.run(
-                ["docker", "ps", "--filter", "name=phpdev-",
-                 "--format", "{{.Names}}"],
+                ["docker", "ps",
+                 "--format", "{{.Names}}\t{{.Status}}"],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
-            self._running_containers = set(result.stdout.strip().splitlines())
+            rows = [line.split('\t', 1) for line in result.stdout.strip().splitlines()]
+            self._running_containers = {row[0] for row in rows}
+            self._unhealthy_containers = {row[0] for row in rows if len(row) > 1 and 'unhealthy' in row[1]}
         except Exception:
             self._running_containers = set()
+            self._unhealthy_containers = set()
         self._running_containers_ts = now
 
     def _check_service_running(self, path: Path, service: str) -> bool:
@@ -211,7 +250,14 @@ class ProjectManager:
 
     def project_exists(self, name: str) -> bool:
         """检查项目是否存在"""
-        return (BASE_DIR / name).exists()
+        if (BASE_DIR / name).exists():
+            return True
+        # 重命名保留 Compose 身份及数据卷；旧名称不能被另一个独立项目重复使用。
+        for compose in BASE_DIR.glob('*/docker-compose.yml'):
+            match = re.search(r'^name:\s*[\'"]?([^\s\'"]+)', compose.read_text(), re.M)
+            if match and match.group(1) in (name.lower(), 'phpdev-' + name):
+                return True
+        return False
 
     def is_valid_name(self, name: str) -> Tuple[bool, str]:
         """验证项目名称"""
@@ -267,10 +313,35 @@ class ProjectManager:
             return False
 
     def delete_project(self, project: Project) -> bool:
+        from core.environment import operation_lock, read_binding, EnvironmentManager, write_binding
+        from contextlib import ExitStack
+        try:
+            with operation_lock(project.path), ExitStack() as locks:
+                if (project.path / '.phpbox/switch.json').exists():
+                    raise RuntimeError('请先恢复未完成的环境切换')
+                binding = read_binding(project.path)
+                if binding:
+                    manager = EnvironmentManager()
+                    environment = manager.load(binding['environment_id'])
+                    locks.enter_context(operation_lock(environment.path))
+                    locks.enter_context(manager.maintenance(environment))
+                    manager.assert_project_idle(project.path)
+                    write_binding(project.path, dict(binding, enabled=False))
+                    manager.sync_cron(environment)
+                success = self._delete_project(project)
+                if binding and not success:
+                    write_binding(project.path, binding)
+                    manager.sync_cron(environment)
+                return success
+        except Exception as exc:
+            print(f'删除项目失败: {exc}')
+            return False
+
+    def _delete_project(self, project: Project) -> bool:
         """删除项目"""
         try:
             docker = DockerManager(project.path)
-            result = docker._run_command(["down", "--volumes"])
+            result = docker._run_command(["down", "--volumes", "--remove-orphans"])
             if not result.success:
                 print(f"停止容器失败，保留项目目录: {result.error}")
                 return False
@@ -282,6 +353,35 @@ class ProjectManager:
             return False
 
     def rename_project(self, project: Project, new_name: str) -> bool:
+        from core.environment import operation_lock, read_binding, EnvironmentManager, write_binding
+        from contextlib import ExitStack
+        try:
+            with operation_lock(project.path), ExitStack() as locks:
+                if (project.path / '.phpbox/switch.json').exists():
+                    raise RuntimeError('请先恢复未完成的环境切换')
+                binding = read_binding(project.path)
+                if binding:
+                    manager = EnvironmentManager()
+                    environment = manager.load(binding['environment_id'])
+                    locks.enter_context(operation_lock(environment.path))
+                    locks.enter_context(manager.maintenance(environment))
+                    manager.assert_project_idle(project.path)
+                    write_binding(project.path, dict(binding, enabled=False))
+                    manager.sync_cron(environment)
+                success = self._rename_project(project, new_name)
+                if binding:
+                    target = project.path.parent / new_name if success else project.path
+                    write_binding(target, binding)
+                    from core.tasks import TaskManager
+                    renamed = Project(target.name, target)
+                    TaskManager([renamed]).ensure_runner_script(renamed)
+                    manager.sync_cron(environment)
+                return success
+        except Exception as exc:
+            print(f'重命名失败: {exc}')
+            return False
+
+    def _rename_project(self, project: Project, new_name: str) -> bool:
         valid, _ = self.is_valid_name(new_name)
         if not valid or self.project_exists(new_name):
             return False
@@ -295,17 +395,21 @@ class ProjectManager:
         code_moved = False
         running_services = []
         docker = DockerManager(old_path)
+        from core.environment import read_binding, container_workdir
+        shared = read_binding(old_path) is not None
+        old_workdir = container_workdir(old_path) if shared else ''
         try:
             status = docker._run_command(["ps", "--status", "running", "--format", "{{.Service}}"])
             if not status.success:
                 raise RuntimeError(status.error)
             running_services = status.output.splitlines()
             for relative in [Path("docker-compose.yml"), Path("Dockerfile"),
+                             Path('nginx/default.conf'),
                              code_path.relative_to(old_path) / ".phpbox/tasks/tasks.json"]:
                 file = old_path / relative
                 if file.exists():
                     snapshots[relative] = file.read_bytes()
-            result = docker.down()
+            result = docker._run_command(['down'])
             if not result.success:
                 raise RuntimeError(result.error)
 
@@ -326,6 +430,11 @@ class ProjectManager:
             )
             if rename_code:
                 content = content.replace(f"./{project.name}:", f"./{new_name}:")
+            if shared:
+                new_workdir = container_workdir(new_path)
+                content = content.replace(old_workdir, new_workdir)
+                nginx = new_path / 'nginx/default.conf'
+                nginx.write_text(nginx.read_text().replace(old_workdir, new_workdir))
             content = content.replace(f"PROJECT_NAME={project.name}", f"PROJECT_NAME={new_name}")
             compose_file.write_text(content)
             dockerfile = new_path / "Dockerfile"
@@ -348,7 +457,7 @@ class ProjectManager:
         except Exception as exc:
             print(f"重命名失败: {exc}")
             if moved:
-                cleanup = DockerManager(new_path).down()
+                cleanup = DockerManager(new_path)._run_command(['down'])
                 if not cleanup.success:
                     print(f"停止新容器失败，保留当前目录以便恢复: {new_path}: {cleanup.error}")
                     return False
@@ -382,7 +491,7 @@ class ProjectManager:
         try:
             # 修改 docker-compose.yml 中的端口映射
             content = compose_file.read_text()
-            content = re.sub(r'"(\d+):80"', f'"{new_port}:80"', content)
+            content = re.sub(r'(\d+):80\b', f'{new_port}:80', content)
             compose_file.write_text(content)
 
             # 修改 .env 文件中的 PORT
@@ -440,7 +549,7 @@ def get_port_usage(
                     if compose_file.exists():
                         try:
                             content = compose_file.read_text()
-                            match = re.search(r'"(\d+):80"', content)
+                            match = re.search(r'(\d+):80\b', content)
                             if match:
                                 project_port = int(match.group(1))
                         except Exception:

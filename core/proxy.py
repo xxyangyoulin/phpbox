@@ -213,7 +213,10 @@ def sync_all_projects_proxy(proxy_url: Optional[str]) -> dict:
     if not BASE_DIR.exists():
         return {"dockerfiles": 0, "running_containers": 0}
 
+    from core.environment import read_binding
     for item in BASE_DIR.iterdir():
+        if read_binding(item):
+            continue
         if not item.is_dir():
             continue
         compose_file = item / "docker-compose.yml"

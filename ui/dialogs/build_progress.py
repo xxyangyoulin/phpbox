@@ -272,6 +272,7 @@ class BuildProgressDialog(FluentDialog):
     def set_finished(self, success: bool, message: str = None):
         """设置完成状态"""
         self._spin_timer.stop()
+        self._finished = True
 
         if success:
             self._set_stage(3)
@@ -297,7 +298,7 @@ class BuildProgressDialog(FluentDialog):
             self.reject()
             return
 
-        if self.progress_bar.value() >= 100 or self.title_label.text().endswith("构建失败"):
+        if getattr(self, '_finished', False):
             # 已完成或失败，直接关闭
             self.accept()
             return

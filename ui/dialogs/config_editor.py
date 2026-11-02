@@ -441,6 +441,10 @@ class ConfigEditorDialog(FluentDialog):
             ("Dockerfile", "Dockerfile"),
         ]
 
+        from core.environment import read_binding
+        if read_binding(self.project_path):
+            config_files = [(name, path) for name, path in config_files if path.startswith('nginx/') or path == 'docker-compose.yml']
+
         for name, rel_path in config_files:
             full_path = self.project_path / rel_path
             if full_path.exists():

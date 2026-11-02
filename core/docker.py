@@ -4,6 +4,7 @@ import time
 import subprocess
 import os
 import shutil
+import sys
 from pathlib import Path
 from core.process import run_process
 from typing import List, Optional, Callable, Tuple
@@ -193,6 +194,24 @@ class DockerManager:
 
     def up(self, build: bool = False) -> DockerResult:
         """启动服务"""
+        from core.environment import read_binding
+        if read_binding(self.project_path):
+            from core.runtime import ProjectRuntime
+            try:
+                ProjectRuntime(self.project_path, self.cancel).lifecycle("up")
+                return DockerResult(True)
+            except Exception as exc:
+                return DockerResult(False, error=str(exc))
+        from core.environment import operation_lock
+        try:
+            with operation_lock(self.project_path):
+                if (self.project_path / '.phpbox/switch.json').exists():
+                    raise RuntimeError('环境切换未完成，请先恢复原环境')
+                return self._independent_up(build)
+        except Exception as exc:
+            return DockerResult(False, error=str(exc))
+
+    def _independent_up(self, build: bool = False) -> DockerResult:
         args = ["up", "-d"]
         if build:
             args.insert(1, "--build")
@@ -202,7 +221,7 @@ class DockerManager:
             if validation.success:
                 return result
 
-            cleanup_result = self.down()
+            cleanup_result = self._independent_down()
             cleanup_message = "已自动回滚并清理残留容器。" if cleanup_result.success else (
                 f"自动回滚失败，请手动执行 {self.get_compose_command_text()} down。"
             )
@@ -213,7 +232,7 @@ class DockerManager:
                 port_conflict_detail=validation.port_conflict_detail,
             )
 
-        cleanup_result = self.down()
+        cleanup_result = self._independent_down()
         if cleanup_result.success:
             cleanup_message = "已自动回滚并清理残留容器。"
         else:
@@ -238,7 +257,7 @@ class DockerManager:
         if compose_file.exists():
             try:
                 content = compose_file.read_text()
-                match = re.search(r'"(\d+):80"', content)
+                match = re.search(r'(\d+):80\b', content)
                 if match:
                     return int(match.group(1))
             except Exception:
@@ -272,10 +291,46 @@ class DockerManager:
 
     def stop(self) -> DockerResult:
         """停止服务"""
+        from core.environment import read_binding
+        if read_binding(self.project_path):
+            from core.runtime import ProjectRuntime
+            try:
+                ProjectRuntime(self.project_path, self.cancel).lifecycle("stop")
+                return DockerResult(True)
+            except Exception as exc:
+                return DockerResult(False, error=str(exc))
+        from core.environment import operation_lock
+        try:
+            with operation_lock(self.project_path):
+                if (self.project_path / '.phpbox/switch.json').exists():
+                    raise RuntimeError('环境切换未完成，请先恢复原环境')
+                return self._independent_stop()
+        except Exception as exc:
+            return DockerResult(False, error=str(exc))
+
+    def _independent_stop(self) -> DockerResult:
         return self._run_command(["stop"])
 
     def restart(self) -> DockerResult:
         """重启服务"""
+        from core.environment import read_binding
+        if read_binding(self.project_path):
+            from core.runtime import ProjectRuntime
+            try:
+                ProjectRuntime(self.project_path, self.cancel).lifecycle("restart")
+                return DockerResult(True)
+            except Exception as exc:
+                return DockerResult(False, error=str(exc))
+        from core.environment import operation_lock
+        try:
+            with operation_lock(self.project_path):
+                if (self.project_path / '.phpbox/switch.json').exists():
+                    raise RuntimeError('环境切换未完成，请先恢复原环境')
+                return self._independent_restart()
+        except Exception as exc:
+            return DockerResult(False, error=str(exc))
+
+    def _independent_restart(self) -> DockerResult:
         port = self.get_project_port()
         if port:
             from core.project import get_port_usage
@@ -290,17 +345,35 @@ class DockerManager:
                     port_conflict_detail=f"端口 {port} 已被 {usage} 占用"
                 )
 
-        down_result = self.down()
+        down_result = self._independent_down()
         if not down_result.success:
             return DockerResult(
                 success=False,
                 error=down_result.error.strip() or "停止现有容器失败，无法继续重启"
             )
 
-        return self.up()
+        return self._independent_up()
 
     def down(self, remove_images: bool = False) -> DockerResult:
         """删除服务"""
+        from core.environment import read_binding
+        if read_binding(self.project_path):
+            from core.runtime import ProjectRuntime
+            try:
+                ProjectRuntime(self.project_path, self.cancel).lifecycle("down")
+                return DockerResult(True)
+            except Exception as exc:
+                return DockerResult(False, error=str(exc))
+        from core.environment import operation_lock
+        try:
+            with operation_lock(self.project_path):
+                if (self.project_path / '.phpbox/switch.json').exists():
+                    raise RuntimeError('环境切换未完成，请先恢复原环境')
+                return self._independent_down(remove_images)
+        except Exception as exc:
+            return DockerResult(False, error=str(exc))
+
+    def _independent_down(self, remove_images: bool = False) -> DockerResult:
         args = ["down"]
         if remove_images:
             args.append("--rmi")
@@ -309,6 +382,9 @@ class DockerManager:
 
     def build(self, proxy: Optional[str] = None, no_cache: bool = False) -> DockerResult:
         """构建镜像"""
+        from core.environment import read_binding
+        if read_binding(self.project_path):
+            return DockerResult(False, error="共享项目请在 PHP 环境管理中修改，操作会影响所有绑定项目")
         env = {}
         if proxy:
             env["HTTP_PROXY"] = proxy
@@ -320,6 +396,10 @@ class DockerManager:
 
     def build_live(self, proxy: Optional[str] = None, no_cache: bool = False) -> int:
         """实时输出构建日志"""
+        from core.environment import read_binding
+        if read_binding(self.project_path):
+            print("共享项目请在 PHP 环境管理中重建镜像", file=sys.stderr)
+            return 1
         if not self._compose_cmd:
             print("未检测到 docker compose 或 docker-compose", file=sys.stderr)
             return 1
@@ -343,13 +423,8 @@ class DockerManager:
     def get_logs(self, service: Optional[str] = None,
                  follow: bool = False) -> subprocess.Popen:
         """获取日志 (返回 Popen 对象用于实时输出)"""
-        cmd = self.get_compose_command() + ["logs"]
-        if not cmd:
-            raise RuntimeError("未检测到 docker compose 或 docker-compose")
-        if follow:
-            cmd.append("-f")
-        if service:
-            cmd.append(service)
+        from core.runtime import logs_args
+        cmd = logs_args(self.project_path, service, follow)
 
         return subprocess.Popen(
             cmd,
@@ -363,15 +438,20 @@ class DockerManager:
     def exec_command(self, service: str, command: List[str],
                      user: Optional[str] = None) -> DockerResult:
         """在容器中执行命令"""
-        args = ["exec", "-T"]
-        if user:
-            args.extend(["-u", user])
-        args.append(service)
-        args.extend(command)
-        return self._run_command(args)
+        from core.runtime import exec_args
+        try:
+            args = exec_args(self.project_path, service, command, user=user)
+            result = run_process(args, cwd=str(self.project_path), cancel=self.cancel)
+            return DockerResult(result.returncode == 0, result.stdout,
+                                result.stdout[-4000:] if result.returncode else "")
+        except Exception as exc:
+            return DockerResult(False, error=str(exc))
 
     def install_extensions(self, extensions: List[str]) -> DockerResult:
         """安装 PHP 扩展"""
+        from core.environment import read_binding
+        if read_binding(self.project_path):
+            return DockerResult(False, error="共享项目请在 PHP 环境管理中修改，操作会影响所有绑定项目")
         return self.exec_command(
             "php",
             ["install-php-extensions"] + extensions,
@@ -380,11 +460,17 @@ class DockerManager:
 
     def restart_service(self, service: str) -> DockerResult:
         """重启单个服务"""
+        from core.environment import read_binding
+        if read_binding(self.project_path) and service in ("php", "cron"):
+            return DockerResult(False, error="共享项目请在 PHP 环境管理中修改，操作会影响所有绑定项目")
         return self._run_command(["restart", service])
 
     def start_service(self, service: str, build: bool = False,
                       proxy: Optional[str] = None) -> DockerResult:
         """启动单个服务"""
+        from core.environment import read_binding
+        if read_binding(self.project_path) and service in ("php", "cron"):
+            return DockerResult(False, error="共享项目请在 PHP 环境管理中修改，操作会影响所有绑定项目")
         args = ["up", "-d"]
         if build:
             args.append("--build")
@@ -401,10 +487,16 @@ class DockerManager:
 
     def stop_service(self, service: str) -> DockerResult:
         """停止单个服务"""
+        from core.environment import read_binding
+        if read_binding(self.project_path) and service in ("php", "cron"):
+            return DockerResult(False, error="共享项目请在 PHP 环境管理中修改，操作会影响所有绑定项目")
         return self._run_command(["stop", service])
 
     def has_service(self, service: str) -> bool:
         """检测 compose 中是否存在服务"""
+        from core.environment import read_binding
+        if read_binding(self.project_path) and service in ('php', 'cron'):
+            return True
         compose_file = self.project_path / "docker-compose.yml"
         if not compose_file.exists():
             return False
@@ -416,6 +508,10 @@ class DockerManager:
 
     def is_service_running(self, service: str) -> bool:
         """检测服务是否运行"""
+        from core.environment import read_binding, EnvironmentManager
+        binding = read_binding(self.project_path)
+        if binding and service in ("php", "cron"):
+            return EnvironmentManager().running(EnvironmentManager().load(binding['environment_id']))
         try:
             result = subprocess.run(
                 self.get_compose_command() + [
@@ -428,20 +524,6 @@ class DockerManager:
             return service in result.stdout.splitlines()
         except Exception:
             return False
-
-    def apply_project_cron_file(self, cron_file_path: str) -> DockerResult:
-        """将项目内生成的 cron 文件装载到 cron 服务"""
-        return self.exec_command(
-            "cron",
-            ["crontab", cron_file_path]
-        )
-
-    def run_task_now(self, task_id: str) -> DockerResult:
-        """立即执行任务"""
-        return self.exec_command(
-            "cron",
-            ["/var/www/html/.phpbox/tasks/run_task.sh", task_id, "--manual"]
-        )
 
     def get_image_name(self) -> str:
         """获取 PHP 镜像名称"""
@@ -553,6 +635,9 @@ class DockerManager:
         Returns:
             容器是否已运行
         """
+        from core.environment import read_binding
+        if read_binding(self.project_path) and service in ('php', 'cron'):
+            return self.is_service_running(service)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:

@@ -30,12 +30,8 @@ class LogReaderThread(QThread):
 
     def run(self):
         try:
-            command = DockerManager(self.project_path).get_compose_command()
-            if not command:
-                raise RuntimeError("未检测到 Docker Compose")
-            command += ["logs", "-f", "--tail", "200"]
-            if self.service:
-                command.append(self.service)
+            from core.runtime import logs_args
+            command = logs_args(self.project_path, self.service)
             result = run_process(command, cwd=str(self.project_path), cancel=self.cancel_event,
                                  on_output=lambda text: self.chunks.append(text[-16384:]), timeout=86400)
             if result.returncode:
@@ -66,6 +62,11 @@ class LogViewerDialog(FluentDialog):
     def setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
+        from core.environment import read_binding
+        if read_binding(self.project_path):
+            label = BodyLabel('PHP / Cron 日志来自共享环境，包含其他绑定项目；“全部”显示项目自身服务。')
+            label.setWordWrap(True)
+            layout.addWidget(label)
 
         # 工具栏
         toolbar = QHBoxLayout()

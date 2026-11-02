@@ -396,10 +396,24 @@ class ModernDashboardWidget(ScrollArea):
         self.path_label.mousePressEvent = self._copy_path
         info_layout.addWidget(self.path_label)
 
-        # 统计信息内联文字
+        # PHP 版本与环境信息
+        runtime_info_layout = QHBoxLayout()
+        runtime_info_layout.setSpacing(8)
+        self.php_version_badge = CaptionLabel("PHP ...")
+        self.php_version_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.php_version_badge.setFixedHeight(24)
+        self.php_version_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.php_version_badge.setStyleSheet(
+            f"background-color: {themed_color('#eef2ff', '#312e51')}; "
+            f"color: {themed_color('#4f46e5', '#c7d2fe')}; "
+            "border-radius: 6px; padding: 2px 8px; font-size: 13px; font-weight: 600;"
+        )
+        runtime_info_layout.addWidget(self.php_version_badge, 0, Qt.AlignmentFlag.AlignTop)
         self.stats_line = CaptionLabel("...")
+        self.stats_line.setWordWrap(True)
         self.stats_line.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
-        info_layout.addWidget(self.stats_line)
+        runtime_info_layout.addWidget(self.stats_line, 1)
+        info_layout.addLayout(runtime_info_layout)
 
         self.health_detail_label = CaptionLabel("...")
         self.health_detail_label.setStyleSheet(f"color: {themed_color('#94a3b8', '#64748b')};")
@@ -417,16 +431,22 @@ class ModernDashboardWidget(ScrollArea):
         self.restart_btn.setMinimumHeight(32)
         self.restart_btn.setCheckable(False)
         
-        # 更多操作按钮 (重命名、删除被收纳至此)
+        # 更多操作菜单
         self.more_btn = TransparentToolButton(FIF.MORE)
         self.more_btn.setFixedSize(32, 32)
 
         self.more_menu = RoundMenu(parent=self.more_btn)
         self.rename_action = Action(FIF.EDIT, "项目设置")
         self.change_port_action = Action(FIF.GLOBE, "修改端口")
+        self.switch_environment_action = Action(FIF.SYNC, "切换 PHP 环境")
+        self.manage_environment_action = Action(FIF.DEVELOPER_TOOLS, "管理 PHP 环境")
         self.delete_action = Action(FIF.DELETE, "删除项目")
         self.more_menu.addAction(self.rename_action)
         self.more_menu.addAction(self.change_port_action)
+        self.more_menu.addSeparator()
+        self.more_menu.addAction(self.switch_environment_action)
+        self.more_menu.addAction(self.manage_environment_action)
+        self.more_menu.addSeparator()
         self.more_menu.addAction(self.delete_action)
         self.more_btn.clicked.connect(
             lambda: self.more_menu.exec(self.more_btn.mapToGlobal(self.more_btn.rect().bottomLeft()))
@@ -930,7 +950,12 @@ class ModernDashboardWidget(ScrollArea):
         project_path = Path(project.path)
         self._storage_project_path = project_path
 
-        self.stats_line.setText(f"PHP {project.php_version}  ·  http://localhost:{project.port}")
+        self.php_version_badge.setText(f"PHP {project.php_version}")
+        environment_text = '使用环境：' + project.environment_name if project.environment_id else '使用项目独立 PHP'
+        self.stats_line.setText(
+            f"{environment_text}  ·  http://localhost:{project.port}"
+            + (f"  ·  {project.runtime_error}" if project.runtime_error else "")
+        )
         self.stats_line.setStyleSheet(f"color: {themed_color('#64748b', '#8b95a5')};")
         self.health_detail_label.setText(project.health_summary)
         self.path_label.setText(str(project.path))
@@ -1078,6 +1103,10 @@ class ModernDashboardWidget(ScrollArea):
         self._render_extensions()
 
 
+from core.runtime import exec_args
+from ui.environments import EnvironmentsPage, SwitchEnvironmentDialog
+
+
 class ProjectDashboardPage(QWidget):
     """项目仪表盘页面（右侧内容区）"""
 
@@ -1178,11 +1207,26 @@ class ProjectDashboardPage(QWidget):
         self.dashboard.code_log_btn.clicked.connect(self.open_code_log_terminal)
         self.dashboard.rename_action.triggered.connect(self.rename_project)
         self.dashboard.change_port_action.triggered.connect(self.change_port)
+        self.dashboard.switch_environment_action.triggered.connect(self.switch_environment)
+        self.dashboard.manage_environment_action.triggered.connect(self.manage_environment)
         self.dashboard.alert_action_btn.clicked.connect(self.view_logs)
         layout.addWidget(self.dashboard, 1)
 
         self.show_project_view(False)
         self.refresh_global_banner()
+
+    def switch_environment(self):
+        if not self.current_project:
+            return
+        self.switch_dialog = SwitchEnvironmentDialog(self.current_project, self)
+        self.switch_dialog.changed.connect(self._reload_current)
+        self.switch_dialog.show()
+
+    def manage_environment(self):
+        window = self.window()
+        if hasattr(window, 'environments_page'):
+            window.stackedWidget.setCurrentWidget(window.environments_page)
+            window.environments_page.refresh(self.current_project.environment_id if self.current_project else None)
 
     def _open_settings_from_banner(self):
         main_win = self.window()
@@ -1377,30 +1421,21 @@ class ProjectDashboardPage(QWidget):
             )
             return
         p = str(self.current_project.path)
-        docker = DockerManager(self.current_project.path)
-        compose_cmd = docker.get_compose_command()
-        compose_text = docker.get_compose_command_text()
-        if not compose_cmd:
-            InfoBar.error(
-                title="错误",
-                content="未检测到 docker compose 或 docker-compose",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=3000,
-                parent=self
-            )
-            return
         # 在容器内优先使用 zsh，其次 bash，最后 sh
         shell_entry = "if command -v zsh >/dev/null 2>&1; then exec zsh; elif command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi"
-        cmd = f"cd {shlex.quote(p)} && {compose_text} exec php sh -lc {shlex.quote(shell_entry)}"
+        try:
+            command = exec_args(self.current_project.path, 'php', ['sh', '-c', shell_entry], tty=True)
+        except Exception as exc:
+            self._notify('无法执行', str(exc), 'warning')
+            return
+        cmd = f"cd {shlex.quote(p)} && " + shlex.join(command)
         self._launch_terminal([
             ["deepin-terminal", "-C", cmd],
-            ["kitty", "--directory", p, *compose_cmd, "exec", "php", "sh", "-lc", shell_entry],
-            ["alacritty", "--working-directory", p, "-e", *compose_cmd, "exec", "php", "sh", "-lc", shell_entry],
-            ["gnome-terminal", "--working-directory", p, "--", *compose_cmd, "exec", "php", "sh", "-lc", shell_entry],
-            ["konsole", "--workdir", p, "-e", *compose_cmd, "exec", "php", "sh", "-lc", shell_entry],
-            ["xfce4-terminal", "--working-directory", p, "-e", f"{compose_text} exec php sh -lc {shlex.quote(shell_entry)}"],
+            ["kitty", "--directory", p, *command],
+            ["alacritty", "--working-directory", p, "-e", *command],
+            ["gnome-terminal", "--working-directory", p, "--", *command],
+            ["konsole", "--workdir", p, "-e", *command],
+            ["xfce4-terminal", "--working-directory", p, "-e", shlex.join(command)],
             ["xterm", "-e", "sh", "-c", cmd],
         ])
 
@@ -1576,7 +1611,11 @@ class ProjectDashboardPage(QWidget):
         project_path = self.current_project.path
         def clear():
             docker = DockerManager(project_path)
-            for service, directory in [("nginx", "/var/log/nginx"), ("php", "/var/log/php-fpm")]:
+            from core.environment import read_binding
+            targets = [("nginx", "/var/log/nginx")]
+            if not read_binding(project_path):
+                targets.append(("php", "/var/log/php-fpm"))
+            for service, directory in targets:
                 result = docker.exec_command(service, ["sh", "-c", 'for f in "$1"/*.log; do [ ! -f "$f" ] || : > "$f" || exit; done', "sh", directory])
                 if not result.success:
                     raise RuntimeError(result.error)
@@ -1633,6 +1672,9 @@ class ProjectDashboardPage(QWidget):
     def configure_xdebug(self):
         if not self.current_project:
             return
+        if self.current_project.environment_id:
+            self.manage_environment()
+            return
         if not self.current_project.is_running:
             InfoBar.warning(
                 title="提示",
@@ -1646,6 +1688,9 @@ class ProjectDashboardPage(QWidget):
     def install_extension(self):
         if not self.current_project:
             return
+        if self.current_project.environment_id:
+            self.manage_environment()
+            return
         InstallExtDialog(
             self.current_project.path,
             self.current_project.name,
@@ -1654,6 +1699,9 @@ class ProjectDashboardPage(QWidget):
 
     def _install_missing_extension(self, extension: str):
         if not self.current_project:
+            return
+        if self.current_project.environment_id:
+            self.manage_environment()
             return
 
         ext_name = AVAILABLE_EXTENSION_META.get(extension, {}).get("name", extension)
@@ -1712,6 +1760,9 @@ class ProjectDashboardPage(QWidget):
         """PHP 配置项点击处理"""
         if not self.current_project:
             return
+        if self.current_project.environment_id:
+            self.manage_environment()
+            return
         if not self.current_project.is_running:
             InfoBar.warning(
                 title="提示",
@@ -1768,25 +1819,18 @@ class ProjectDashboardPage(QWidget):
             full_cmd += f" {package}"
 
         p = str(self.current_project.path)
-        docker = DockerManager(self.current_project.path)
-        compose_cmd = docker.get_compose_command()
-        compose_text = docker.get_compose_command_text()
-        if not compose_cmd:
-            InfoBar.error(
-                title="错误",
-                content="未检测到 docker compose 或 docker-compose",
-                orient=Qt.Orientation.Horizontal,
-                parent=self
-            )
+        try:
+            command_args = exec_args(self.current_project.path, 'php', ['sh', '-c', full_cmd], tty=True)
+        except Exception as exc:
+            self._notify('无法执行', str(exc), 'warning')
             return
-        # 在终端中执行 composer 命令
-        shell_cmd = f"cd {shlex.quote(p)} && {compose_text} exec php sh -lc {shlex.quote(full_cmd)}"
+        shell_cmd = f"cd {shlex.quote(p)} && " + shlex.join(command_args)
         self._launch_terminal([
-            ["kitty", "--directory", p, *compose_cmd, "exec", "php", "sh", "-lc", full_cmd],
-            ["alacritty", "--working-directory", p, "-e", *compose_cmd, "exec", "php", "sh", "-lc", full_cmd],
-            ["gnome-terminal", "--working-directory", p, "--", *compose_cmd, "exec", "php", "sh", "-lc", full_cmd],
-            ["konsole", "--workdir", p, "-e", *compose_cmd, "exec", "php", "sh", "-lc", full_cmd],
-            ["xfce4-terminal", "--working-directory", p, "-e", f"{compose_text} exec php sh -lc {shlex.quote(full_cmd)}"],
+            ["kitty", "--directory", p, *command_args],
+            ["alacritty", "--working-directory", p, "-e", *command_args],
+            ["gnome-terminal", "--working-directory", p, "--", *command_args],
+            ["konsole", "--workdir", p, "-e", *command_args],
+            ["xfce4-terminal", "--working-directory", p, "-e", shlex.join(command_args)],
             ["xterm", "-e", "sh", "-c", shell_cmd],
         ])
 
@@ -1835,6 +1879,9 @@ class ProjectDashboardPage(QWidget):
     def rebuild_image(self):
         """重建当前项目镜像"""
         if not self.current_project:
+            return
+        if self.current_project.environment_id:
+            self.manage_environment()
             return
         if not self._ensure_docker_ready():
             return
@@ -1886,6 +1933,12 @@ class MainWindow(FluentWindow):
         self.stackedWidget.addWidget(self.dashboard_page)
         self.operations_page = OperationsPage(self)
         self.stackedWidget.addWidget(self.operations_page)
+        self.environments_page = EnvironmentsPage(self)
+        self.stackedWidget.addWidget(self.environments_page)
+        self.navigationInterface.addItem(
+            routeKey='php_environments', icon=FIF.IOT, text='PHP 环境',
+            onClick=self.dashboard_page.manage_environment, position=NavigationItemPosition.BOTTOM
+        )
         self.task_center_page = TaskCenterPage(self)
         self.stackedWidget.addWidget(self.task_center_page)
         self.stackedWidget.setCurrentWidget(self.dashboard_page)
