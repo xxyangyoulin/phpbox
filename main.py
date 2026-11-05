@@ -445,7 +445,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("PHP 开发环境管理器")
-    app.setApplicationVersion("1.0.23")
+    app.setApplicationVersion("1.0.24")
     app.setOrganizationName("phpbox")
     app.setQuitOnLastWindowClosed(False)  # 关闭窗口不退出，托盘运行
 
@@ -517,6 +517,16 @@ def main():
     # 清理
     if theme_watcher:
         theme_watcher.stop()
+
+    if window.restart_args is not None:
+        # aboutToQuit 已释放单实例地址；替换当前进程，避免新旧实例竞争。
+        command = [sys.executable]
+        env = os.environ.copy()
+        if getattr(sys, "frozen", False):
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        else:
+            command.append(str(Path(__file__).resolve()))
+        os.execve(sys.executable, command + window.restart_args, env)
 
     sys.exit(result)
 

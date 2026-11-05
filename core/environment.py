@@ -287,21 +287,21 @@ exit 1
                 except Exception:
                     self.generate_files(original)
                     raise
-            try:
-                with self.maintenance(environment):
+            with self.maintenance(environment):
+                try:
                     atomic_write(file, config)
                     if self.running(environment):
                         self.command(['docker', 'exec', environment.container, 'php-fpm', '-t'])
                         self.compose(environment, ['restart'])
                         self.verify(environment)
                     self.save(environment)
-            except Exception:
-                atomic_write(file, previous)
-                self.generate_files(original)
-                recovery = EnvironmentManager(on_output=self.on_output)
-                if recovery.running(environment):
-                    recovery.compose(environment, ['restart'])
-                raise
+                except Exception:
+                    atomic_write(file, previous)
+                    self.generate_files(original)
+                    recovery = EnvironmentManager(on_output=self.on_output)
+                    if recovery.running(environment):
+                        recovery.compose(environment, ['restart'])
+                    raise
 
     def _build(self, environment):
         with self.maintenance(environment):

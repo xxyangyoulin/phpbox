@@ -3,16 +3,17 @@ import re
 from pathlib import Path
 from typing import Tuple
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QGridLayout
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, LineEdit, SpinBox,
     BodyLabel, CaptionLabel, ComboBox, EditableComboBox, CardWidget,
-    StrongBodyLabel, FluentIcon as FIF, InfoBar, InfoBarPosition
+    StrongBodyLabel, FluentIcon as FIF, InfoBar, InfoBarPosition, MessageBox
 )
 
 from ui.worker import OperationWorker
-from core.docker import DockerManager
+from core.docker import DockerManager, DockerResult
+from core.environment import EnvironmentManager, read_binding
 from ui.styles import FluentDialog
 
 
@@ -66,12 +67,18 @@ CONFIG_LABELS = {
 class PhpConfigDialog(FluentDialog):
     """PHP 配置编辑对话框"""
 
+    config_applied = pyqtSignal()
+
     def __init__(self, project_path: Path, project_name: str, current_config: dict, parent=None):
         super().__init__(parent)
         self.project_path = project_path
         self.project_name = project_name
         self.current_config = current_config
+        self._notification_parent = parent.window() if parent else self
         self.docker = DockerManager(project_path)
+        binding = read_binding(project_path)
+        self.environment = EnvironmentManager().load(binding['environment_id']) if binding else None
+        self.config_path = self.environment.path if self.environment else project_path
 
         self.setWindowTitle(f"编辑 PHP 配置 - {project_name}")
         self.setMinimumSize(500, 450)
@@ -81,6 +88,13 @@ class PhpConfigDialog(FluentDialog):
     def setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
+
+        if self.environment:
+            projects = EnvironmentManager().bindings(self.environment.id)
+            scope = BodyLabel(f"PHP 环境：{self.environment.name}\n影响项目：" +
+                              ('、'.join(path.name for path in projects) or '无'))
+            scope.setWordWrap(True)
+            layout.addWidget(scope)
 
         # 配置卡片
         config_card = CardWidget(self)
@@ -200,7 +214,7 @@ class PhpConfigDialog(FluentDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
-        self.save_btn = PrimaryPushButton(FIF.SAVE, "保存并重启 PHP")
+        self.save_btn = PrimaryPushButton(FIF.SAVE, "保存并应用" if self.environment else "保存并重启 PHP")
         self.save_btn.clicked.connect(self.save_config)
         self.save_btn.setDefault(True)
         btn_layout.addWidget(self.save_btn)
@@ -337,7 +351,7 @@ class PhpConfigDialog(FluentDialog):
             )
             return
 
-        php_ini = self.project_path / "php" / "php.ini"
+        php_ini = self.config_path / "php" / "php.ini"
         if not php_ini.exists():
             InfoBar.error(
                 title="错误",
@@ -381,33 +395,51 @@ class PhpConfigDialog(FluentDialog):
 
             content = '\n'.join(lines)
 
-        # 写入文件
-        php_ini.write_text(content)
+        if self.environment:
+            projects = EnvironmentManager().bindings(self.environment.id)
+            if not MessageBox('应用 PHP 环境配置', f'将更新 PHP 环境「{self.environment.name}」，运行中的环境将重启。\n影响项目：' +
+                              ('、'.join(path.name for path in projects) or '无') +
+                              '\n正在执行的任务会阻止操作。', self).exec():
+                return
+            def operation():
+                manager = EnvironmentManager()
+                environment = manager.load(self.environment.id)
+                manager.update(environment, environment.extensions, environment.proxy, content)
+                return DockerResult(True)
+        else:
+            php_ini.write_text(content)
+            def operation():
+                result = self.docker.restart_service("php")
+                if not result.success:
+                    raise RuntimeError(result.error)
+                return result
 
-        # 重启 PHP 服务
         self.save_btn.setEnabled(False)
-        self.operation_worker = OperationWorker(lambda: self.docker.restart_service("php"))
+        self.operation_worker = OperationWorker(operation)
         self.operation_worker.succeeded.connect(self._on_restarted)
         self.operation_worker.failed.connect(self._on_restart_failed)
+        if hasattr(self._notification_parent, 'operations_page'):
+            self._notification_parent.operations_page.track(
+                self.operation_worker, self.project_name + ' · 应用 PHP 配置', str(self.config_path), dialog=self
+            )
         self.operation_worker.start()
+        self.accept()
+        InfoBar.info(title="正在应用 PHP 配置", content="PHP 服务将在后台更新，完成后会通知你。",
+                     parent=self._notification_parent)
 
     def _on_restart_failed(self, message):
         self.save_btn.setEnabled(True)
-        InfoBar.warning(title="配置已保存，但重启失败", content=message, parent=self)
+        if self.environment:
+            InfoBar.error(title="环境配置应用失败", content=message, parent=self._notification_parent)
+        else:
+            InfoBar.warning(title="配置已保存，但重启失败", content=message, parent=self._notification_parent)
 
     def _on_restarted(self, result):
         self.save_btn.setEnabled(True)
-        if result.success:
-            InfoBar.success(
-                title="成功",
-                content="配置已更新，PHP 服务已重启",
-                orient=Qt.Orientation.Horizontal,
-                parent=self.window()
-            )
-            self.accept()
-        else:
-            InfoBar.warning(
-                title="警告",
-                content=f"配置已保存但重启失败: {result.error}",
-                parent=self.window()
-            )
+        self.config_applied.emit()
+        InfoBar.success(
+            title="成功",
+            content="PHP 环境配置已应用" if self.environment else "配置已更新，PHP 服务已重启",
+            orient=Qt.Orientation.Horizontal,
+            parent=self._notification_parent
+        )

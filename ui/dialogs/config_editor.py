@@ -17,6 +17,8 @@ from qfluentwidgets import (
     InfoBar, InfoBarPosition, MessageBox
 )
 from ui.styles import FluentDialog
+from ui.worker import OperationWorker
+from core.environment import EnvironmentManager, read_binding
 
 
 class ConfigHighlighter(QSyntaxHighlighter):
@@ -169,6 +171,9 @@ class ConfigEditorDialog(FluentDialog):
         super().__init__(parent)
         self.project_path = project_path
         self.project_name = project_name
+        binding = read_binding(project_path)
+        self.environment = EnvironmentManager().load(binding['environment_id']) if binding else None
+        self._saving = False
         self.current_file: Optional[Path] = None
         self.has_unsaved_changes = False
         self._original_content = ""  # 保存原始文件内容
@@ -218,6 +223,10 @@ class ConfigEditorDialog(FluentDialog):
         # 文件路径标签
         self.file_path_label = CaptionLabel()
         layout.addWidget(self.file_path_label)
+        self.scope_label = CaptionLabel()
+        self.scope_label.setWordWrap(True)
+        self.scope_label.setVisible(self.environment is not None)
+        layout.addWidget(self.scope_label)
 
         # 搜索栏
         self.search_frame = QFrame()
@@ -441,15 +450,16 @@ class ConfigEditorDialog(FluentDialog):
             ("Dockerfile", "Dockerfile"),
         ]
 
-        from core.environment import read_binding
-        if read_binding(self.project_path):
+        if self.environment:
             config_files = [(name, path) for name, path in config_files if path.startswith('nginx/') or path == 'docker-compose.yml']
+            config_files.insert(0, (f"PHP 环境配置 ({self.environment.name} · php.ini)",
+                                    str(self.environment.path / 'php/php.ini')))
 
         for name, rel_path in config_files:
             full_path = self.project_path / rel_path
             if full_path.exists():
                 self.file_combo.addItem(name)
-                self.file_combo.setItemData(self.file_combo.count() - 1, rel_path)
+                self.file_combo.setItemData(self.file_combo.count() - 1, str(full_path))
 
         if self.file_combo.count() > 0:
             self.file_combo.setCurrentIndex(0)
@@ -465,8 +475,7 @@ class ConfigEditorDialog(FluentDialog):
         result = dialog.exec()
 
         if result == 1:  # 保存
-            self.save_file()
-            return True
+            return self.save_file()
         elif result == 2:  # 不保存
             return True
         else:  # 取消
@@ -479,6 +488,9 @@ class ConfigEditorDialog(FluentDialog):
 
         if self.has_unsaved_changes:
             if not self._prompt_save_changes():
+                self.file_combo.blockSignals(True)
+                self.file_combo.setCurrentIndex(self.file_combo.findData(str(self.current_file)))
+                self.file_combo.blockSignals(False)
                 return  # 用户取消
 
         rel_path = self.file_combo.currentData()
@@ -505,6 +517,14 @@ class ConfigEditorDialog(FluentDialog):
             self.save_btn.setEnabled(False)
             self.file_path_label.setText(str(self.current_file))
             self.status_label.setText(f"已加载: {self.current_file.name}")
+            if self.environment and self.current_file == self.environment.path / 'php/php.ini':
+                projects = EnvironmentManager().bindings(self.environment.id)
+                self.scope_label.setText(f"PHP 环境：{self.environment.name} · 影响项目：" +
+                                         ('、'.join(path.name for path in projects) or '无'))
+                self.save_btn.setText('保存并应用')
+            else:
+                self.scope_label.setText(f"当前项目：{self.project_name}")
+                self.save_btn.setText('保存')
         except Exception as e:
             InfoBar.error(title="读取失败", content=f"无法读取文件: {e}", parent=self)
             self.editor.clear()
@@ -533,33 +553,68 @@ class ConfigEditorDialog(FluentDialog):
 
     def save_file(self):
         """保存文件"""
-        if not self.current_file:
-            return
+        if not self.current_file or self._saving:
+            return False
 
         try:
             content = self.editor.toPlainText()
+            if self.environment and self.current_file == self.environment.path / 'php/php.ini':
+                projects = EnvironmentManager().bindings(self.environment.id)
+                if not MessageBox('应用 PHP 环境配置', f'将更新 PHP 环境「{self.environment.name}」，运行中的环境将重启。\n影响项目：' +
+                                  ('、'.join(path.name for path in projects) or '无') +
+                                  '\n正在执行的任务会阻止操作。', self).exec():
+                    return False
+                def operation():
+                    manager = EnvironmentManager()
+                    environment = manager.load(self.environment.id)
+                    manager.update(environment, environment.extensions, environment.proxy, content)
+                    return content
+                self._set_saving(True)
+                self.operation_worker = OperationWorker(operation)
+                self.operation_worker.succeeded.connect(self._on_saved)
+                self.operation_worker.failed.connect(self._on_save_failed)
+                self.operation_worker.start()
+                return False
             self.current_file.write_text(content, encoding='utf-8')
-            self._original_content = content  # 更新原始内容
-            self._last_editor_content = content  # 更新内容快照
-            self.has_unsaved_changes = False
-            self.save_btn.setEnabled(False)
-            self.status_label.setText(f"已保存: {self.current_file.name}")
-
-            InfoBar.success(
-                title="保存成功",
-                content="配置文件已保存。如果修改了服务配置，请重启服务使之生效。",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=5000,
-                parent=self
-            )
+            self._on_saved(content)
+            return True
         except Exception as e:
-            InfoBar.error(title="保存失败", content=str(e), parent=self)
+            self._on_save_failed(str(e))
+            return False
+
+    def _set_saving(self, saving):
+        self._saving = saving
+        self.editor.setEnabled(not saving)
+        self.file_combo.setEnabled(not saving)
+        self.save_btn.setEnabled(not saving and self.has_unsaved_changes)
+        if saving:
+            self.status_label.setText('正在应用 PHP 环境配置…')
+
+    def _on_saved(self, content):
+        self._original_content = content
+        self._last_editor_content = content
+        self.has_unsaved_changes = False
+        self._set_saving(False)
+        shared = self.environment and self.current_file == self.environment.path / 'php/php.ini'
+        self.status_label.setText('PHP 环境配置已应用' if shared else f"已保存: {self.current_file.name}")
+        InfoBar.success(
+            title="保存成功",
+            content="PHP 环境配置已应用。" if shared else "配置文件已保存。如果修改了服务配置，请重启服务使之生效。",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=5000,
+            parent=self
+        )
+
+    def _on_save_failed(self, message):
+        self._set_saving(False)
+        self.status_label.setText('保存失败')
+        InfoBar.error(title="保存失败", content=message, parent=self)
 
     def open_external_editor(self):
         """使用外部编辑器打开"""
-        if not self.current_file:
+        if not self.current_file or self._saving:
             return
 
         if self.has_unsaved_changes:
@@ -607,6 +662,9 @@ class ConfigEditorDialog(FluentDialog):
 
     def closeEvent(self, event):
         """关闭事件"""
+        if self._saving:
+            event.ignore()
+            return
         if self.has_unsaved_changes:
             if not self._prompt_save_changes():
                 event.ignore()

@@ -743,7 +743,8 @@ class ModernDashboardWidget(ScrollArea):
         config_layout.addLayout(ext_header)
 
         self.installed_ext_container = QWidget()
-        self.installed_ext_layout = FlowLayout(self.installed_ext_container, isTight=True)
+        # 标签页隐藏时仍需计算扩展的换行高度，否则切回后会挤压配置行。
+        self.installed_ext_layout = FlowLayout(self.installed_ext_container)
         self.installed_ext_layout.setSpacing(6)
         self.installed_ext_layout.setContentsMargins(0, 0, 0, 0)
         config_layout.addWidget(self.installed_ext_container)
@@ -761,7 +762,7 @@ class ModernDashboardWidget(ScrollArea):
         config_layout.addLayout(missing_header)
 
         self.missing_ext_container = QWidget()
-        self.missing_ext_layout = FlowLayout(self.missing_ext_container, isTight=True)
+        self.missing_ext_layout = FlowLayout(self.missing_ext_container)
         self.missing_ext_layout.setSpacing(6)
         self.missing_ext_layout.setContentsMargins(0, 0, 0, 0)
         config_layout.addWidget(self.missing_ext_container)
@@ -868,20 +869,25 @@ class ModernDashboardWidget(ScrollArea):
         for ext in visible_installed:
             if not ext or ext.startswith("["):
                 continue
-            self.installed_ext_layout.addWidget(self._create_extension_label(ext))
+            label = self._create_extension_label(ext)
+            self.installed_ext_layout.addWidget(label)
+            # 在本轮高度计算前让新控件参与布局，不等待延迟显示事件。
+            label.show()
 
         self.installed_ext_toggle_btn.setVisible(len(self._installed_extensions) > 10)
         self.installed_ext_toggle_btn.setText("收起已安装扩展" if self._installed_extensions_expanded else "展开全部已安装扩展")
-        QTimer.singleShot(0, lambda: self.installed_ext_layout._doLayout(self.installed_ext_container.rect(), True))
+        self.installed_ext_layout.invalidate()
 
         self._clear_flow_layout(self.missing_ext_layout)
         visible_missing = self._missing_extensions if self._missing_extensions_expanded else self._missing_extensions[:10]
         for ext_id in visible_missing:
-            self.missing_ext_layout.addWidget(self._create_missing_extension_button(ext_id))
+            button = self._create_missing_extension_button(ext_id)
+            self.missing_ext_layout.addWidget(button)
+            button.show()
 
         self.missing_ext_toggle_btn.setVisible(len(self._missing_extensions) > 10)
         self.missing_ext_toggle_btn.setText("收起未安装扩展" if self._missing_extensions_expanded else "展开全部未安装扩展")
-        QTimer.singleShot(0, lambda: self.missing_ext_layout._doLayout(self.missing_ext_container.rect(), True))
+        self.missing_ext_layout.invalidate()
 
     def _refresh_header_actions(self, is_running: bool, is_partial: bool):
         while self.header_action_layout.count():
@@ -1104,7 +1110,7 @@ class ModernDashboardWidget(ScrollArea):
 
 
 from core.runtime import exec_args
-from ui.environments import EnvironmentsPage, SwitchEnvironmentDialog
+from ui.environments import EnvironmentsPage, EnvironmentEditor, SwitchEnvironmentDialog
 
 
 class ProjectDashboardPage(QWidget):
@@ -1667,13 +1673,27 @@ class ProjectDashboardPage(QWidget):
     def edit_config(self):
         if not self.current_project:
             return
-        ConfigEditorDialog(self.current_project.path, self.current_project.name, self).exec()
+        try:
+            dialog = ConfigEditorDialog(self.current_project.path, self.current_project.name, self)
+        except (OSError, ValueError) as exc:
+            InfoBar.error('无法打开配置', str(exc), parent=self)
+            return
+        dialog.exec()
+        self._refresh_php_info()
 
     def configure_xdebug(self):
         if not self.current_project:
             return
         if self.current_project.environment_id:
-            self.manage_environment()
+            from core.environment import EnvironmentManager
+            try:
+                environment = EnvironmentManager().load(self.current_project.environment_id)
+                self.environment_editor = EnvironmentEditor(self, environment)
+            except (OSError, ValueError) as exc:
+                InfoBar.error('无法打开环境配置', str(exc), parent=self)
+                return
+            self.environment_editor.saved.connect(lambda value: self._refresh_php_info())
+            self.environment_editor.show()
             return
         if not self.current_project.is_running:
             InfoBar.warning(
@@ -1731,11 +1751,6 @@ class ProjectDashboardPage(QWidget):
 
         self._php_info_request += 1
         request = self._php_info_request
-        # 显示加载状态
-        for key, label in self.dashboard.config_labels.items():
-            label.setText("加载中...")
-        self.dashboard.installed_ext_count_label.setText("加载中...")
-        self.dashboard.missing_ext_count_label.setText("加载中...")
 
         # 异步获取 PHP 信息
         project_path = str(self.current_project.path)
@@ -1760,9 +1775,6 @@ class ProjectDashboardPage(QWidget):
         """PHP 配置项点击处理"""
         if not self.current_project:
             return
-        if self.current_project.environment_id:
-            self.manage_environment()
-            return
         if not self.current_project.is_running:
             InfoBar.warning(
                 title="提示",
@@ -1780,15 +1792,18 @@ class ProjectDashboardPage(QWidget):
             current_config = docker.get_php_info()
 
         # 打开配置编辑对话框
-        dialog = PhpConfigDialog(
-            self.current_project.path,
-            self.current_project.name,
-            current_config,
-            self
-        )
-        if dialog.exec():
-            # 对话框保存成功后刷新配置显示
-            QTimer.singleShot(500, self._refresh_php_info)
+        try:
+            dialog = PhpConfigDialog(
+                self.current_project.path,
+                self.current_project.name,
+                current_config,
+                self
+            )
+        except (OSError, ValueError) as exc:
+            InfoBar.error('无法打开 PHP 配置', str(exc), parent=self)
+            return
+        dialog.config_applied.connect(self._refresh_php_info)
+        dialog.exec()
 
     def _run_composer_command(self, command: str, package: str = ""):
         """在终端中执行 Composer 命令"""
@@ -1917,6 +1932,7 @@ class MainWindow(FluentWindow):
         self.projects: List[Project] = []
         self.docker_ready = docker_ready
         self.docker_error = docker_error
+        self.restart_args = None
 
         # 确保折叠按钮显示在顶部，且隐藏多余的返回按钮
         self.navigationInterface.setMenuButtonVisible(True)
@@ -2178,6 +2194,7 @@ class MainWindow(FluentWindow):
         tray_menu.addAction(Action(FIF.VIEW, "显示主窗口", triggered=self.show))
         tray_menu.addAction(Action(FIF.ADD, "新建项目", triggered=self.create_project))
         tray_menu.addSeparator()
+        tray_menu.addAction(Action(FIF.SYNC, "重启应用", triggered=self.restart_app))
         tray_menu.addAction(Action(FIF.CLOSE, "退出", triggered=self.quit_app))
 
         self.tray_icon.setContextMenu(tray_menu)
@@ -2362,6 +2379,13 @@ class MainWindow(FluentWindow):
             # Information，确保端口冲突等提醒能按超时自动消失。
             tray_icon_type = QSystemTrayIcon.MessageIcon.Information
             self.tray_icon.showMessage(title, msg, tray_icon_type, 3000)
+
+    def restart_app(self):
+        if running_workers():
+            self._notify("暂时无法重启", "后台操作仍在进行，请完成或取消后重试。", "warning")
+            return
+        self.restart_args = [] if self.isVisible() else ["--hide"]
+        self.quit_app()
 
     def quit_app(self):
         workers = running_workers()
