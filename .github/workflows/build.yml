@@ -137,6 +137,7 @@ jobs:
           chmod +x "$DEB_DIR/usr/bin/phpbox"
           ln -s phpbox "$DEB_DIR/usr/bin/pbox"
           cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
+          sh resources/install-cli.sh "$DEB_DIR/usr"
           dpkg-deb --build "$DEB_DIR" "dist/phpbox_${VERSION}_amd64.deb"
           rm -rf "$DEB_DIR"
           echo ".deb 大小: $(du -sh dist/phpbox_${VERSION}_amd64.deb | cut -f1)"

@@ -31,7 +31,10 @@ def exec_args(path, service, command, user=None, tty=False, workdir=None):
         args += ['-u', user or f'{os.getuid()}:{os.getgid()}', '-w', workdir or container_workdir(path),
                  '-e', 'PROJECT_NAME=' + path.name, environment.container]
     else:
-        args = DockerManager(path).get_compose_command() + ['exec']
+        prefix = DockerManager(path).get_compose_command()
+        if not prefix:
+            raise RuntimeError('未检测到 Docker Compose')
+        args = prefix + ['exec']
         if not tty:
             args.append('-T')
         if user:
@@ -42,13 +45,22 @@ def exec_args(path, service, command, user=None, tty=False, workdir=None):
     return args + list(command)
 
 
-def logs_args(path, service=None, follow=True, tail=200):
+def logs_args(path, service=None, follow=True, tail=200, since=None, timestamps=False, no_color=False):
     from core.docker import DockerManager
     binding = read_binding(path)
+    options = (['-f'] if follow else []) + ['--tail', str(tail)]
+    if since:
+        options += ['--since', since]
+    if timestamps:
+        options.append('--timestamps')
     if binding and service in ('php', 'cron'):
         environment = EnvironmentManager().load(binding['environment_id'])
-        return ['docker', 'logs'] + (['-f'] if follow else []) + ['--tail', str(tail), environment.container]
-    return DockerManager(path).get_compose_command() + ['logs'] + (['-f'] if follow else []) + ['--tail', str(tail)] + ([service] if service else [])
+        return ['docker', 'logs'] + options + [environment.container]
+    prefix = DockerManager(path).get_compose_command()
+    if not prefix:
+        raise RuntimeError('未检测到 Docker Compose')
+    return prefix + ['logs'] + options + (['--no-color'] if no_color else []) + ([service] if service else [])
+
 
 
 class ProjectRuntime:
@@ -314,7 +326,7 @@ class ProjectRuntime:
 
     def _compose(self, args):
         from core.docker import DockerManager
-        result = DockerManager(self.path, cancel=self.manager.cancel)._run_command(args)
+        result = DockerManager(self.path, cancel=self.manager.cancel, on_output=self.manager.on_output)._run_command(args)
         if not result.success:
             raise RuntimeError(result.error)
         return result.output
@@ -429,10 +441,13 @@ class ProjectRuntime:
             data = read_binding(self.path)
             environment = self.manager.load(data['environment_id'])
             with operation_lock(environment.path):
-                if action in ('up', 'restart'):
+                if action in ('up', 'restart', 'recreate'):
                     if not self.manager.running(environment):
                         self.manager._start(environment)
-                    self._compose(['up', '-d', '--no-build'])
+                    if action == 'up':
+                        self._compose(['up', '-d', '--no-build'])
+                    elif action == 'recreate':
+                        self._compose(['up', '-d', '--no-build', '--force-recreate'])
                     if action == 'restart':
                         self._compose(['restart'])
                     self._nginx(['-t'])

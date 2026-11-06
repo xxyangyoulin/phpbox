@@ -264,9 +264,9 @@ exit 1
         finally:
             marker.unlink(missing_ok=True)
 
-    def build(self, environment):
+    def build(self, environment, no_cache=False):
         with operation_lock(environment.path):
-            self._build(environment)
+            self._build(environment, no_cache=no_cache)
 
     def update(self, environment, extensions, proxy, config):
         if any(not re.fullmatch(r'[a-zA-Z0-9_]+(?:-[a-zA-Z0-9.^@]+)?', item) for item in extensions):
@@ -303,13 +303,15 @@ exit 1
                         recovery.compose(environment, ['restart'])
                     raise
 
-    def _build(self, environment):
+    def _build(self, environment, no_cache=False):
         with self.maintenance(environment):
             running = self.running(environment)
             previous = run_process(['docker', 'image', 'inspect', '-f', '{{.Id}}', environment.container + ':latest'], timeout=15)
             self.generate_files(environment)
             proxy = convert_proxy_for_docker(environment.proxy) if environment.proxy else ''
             args = ['build']
+            if no_cache:
+                args.append('--no-cache')
             for key in PROXY_KEYS:
                 args += ['--build-arg', key + '=' + (proxy if key.lower() in ('http_proxy', 'https_proxy') else '')]
             try:
@@ -351,6 +353,11 @@ exit 1
         with operation_lock(environment.path):
             with self.maintenance(environment):
                 self.compose(environment, ['stop'])
+
+    def restart(self, environment):
+        with operation_lock(environment.path), self.maintenance(environment):
+            self.compose(environment, ['restart'])
+            self.verify(environment)
 
     def delete(self, environment):
         with operation_lock(environment.path):

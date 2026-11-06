@@ -108,8 +108,9 @@ class ProjectManager:
         self._running_containers: Set[str] = set()
         self._unhealthy_containers: Set[str] = set()
         self._running_containers_ts: float = 0
+        self.status_error = ""
 
-    def get_all_projects(self) -> List[Project]:
+    def get_all_projects(self, with_status=True) -> List[Project]:
         """获取所有项目列表"""
         projects = []
         if not BASE_DIR.exists():
@@ -117,12 +118,17 @@ class ProjectManager:
 
         for item in sorted(BASE_DIR.iterdir()):
             if item.is_dir():
-                project = self._load_project(item)
+                project = self._load_project(item, with_status=with_status)
                 if project:
                     projects.append(project)
         return projects
 
-    def _load_project(self, path: Path) -> Optional[Project]:
+    def get_project(self, name, with_status=True):
+        if not name or Path(name).name != name or name in ('.', '..'):
+            raise ValueError('无效的项目名称')
+        return self._load_project(BASE_DIR / name, with_status=with_status)
+
+    def _load_project(self, path: Path, with_status=True) -> Optional[Project]:
         """加载单个项目信息"""
         compose_file = path / "docker-compose.yml"
         if not compose_file.exists():
@@ -138,17 +144,17 @@ class ProjectManager:
         name = path.name
         php_version = self._get_php_version(path)
         port = self._get_port(path)
-        php_running = self._check_service_running(path, "php")
-        nginx_running = self._check_service_running(path, "nginx")
-        mysql_running = self._check_service_running(path, "mysql")
-        redis_running = self._check_service_running(path, "redis")
+        php_running = with_status and self._check_service_running(path, "php")
+        nginx_running = with_status and self._check_service_running(path, "nginx")
+        mysql_running = with_status and self._check_service_running(path, "mysql")
+        redis_running = with_status and self._check_service_running(path, "redis")
         environment_name = ""
         if binding:
             try:
                 environment = EnvironmentManager().load(binding['environment_id'])
                 environment_name = environment.name
                 php_version = environment.php_version
-                php_running = environment.container in self._running_containers
+                php_running = with_status and environment.container in self._running_containers
                 if environment.container in self._unhealthy_containers:
                     runtime_error = '共享 PHP 环境健康检查失败'
             except (OSError, ValueError) as exc:
@@ -156,6 +162,13 @@ class ProjectManager:
                 runtime_error = str(exc)
         if (path / '.phpbox/switch.json').exists():
             runtime_error = "环境切换未完成，请恢复原环境"
+        if with_status and not runtime_error:
+            unhealthy = [service for service in ('php', 'nginx', 'mysql', 'redis', 'cron')
+                         if f'phpdev-{name}-{service}' in self._unhealthy_containers]
+            if unhealthy:
+                runtime_error = '服务健康检查失败: ' + ', '.join(unhealthy)
+        if with_status and self.status_error:
+            runtime_error = self.status_error
         is_running = php_running and nginx_running and not runtime_error
         auto_restart = self._get_auto_restart(path)
 
@@ -169,7 +182,7 @@ class ProjectManager:
             nginx_running=nginx_running,
             mysql_running=mysql_running,
             redis_running=redis_running,
-            cron_running=php_running if binding else self._check_service_running(path, "cron"),
+            cron_running=php_running if binding else with_status and self._check_service_running(path, "cron"),
             environment_id=binding['environment_id'] if binding else None,
             environment_name=environment_name,
             runtime_error=runtime_error,
@@ -234,12 +247,16 @@ class ProjectManager:
                 text=True,
                 timeout=5
             )
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip() or '无法查询 Docker 容器状态')
             rows = [line.split('\t', 1) for line in result.stdout.strip().splitlines()]
             self._running_containers = {row[0] for row in rows}
             self._unhealthy_containers = {row[0] for row in rows if len(row) > 1 and 'unhealthy' in row[1]}
-        except Exception:
+            self.status_error = ""
+        except Exception as exc:
             self._running_containers = set()
             self._unhealthy_containers = set()
+            self.status_error = '无法获取容器状态: ' + str(exc)
         self._running_containers_ts = now
 
     def _check_service_running(self, path: Path, service: str) -> bool:

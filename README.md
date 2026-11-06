@@ -176,200 +176,136 @@ dist/phpbox/phpbox
 
 ## CLI
 
-phpbox 的 CLI 适合高频终端操作。它有两个核心设计：
+`pbox` 与 `phpbox` 是同一个程序。直接运行 `pbox` 打开图形界面；以下 CLI 命令不需要图形桌面。
 
-- 在任意目录下，可以通过项目名管理项目
-- 在项目目录或其子目录下，可以省略项目名，自动作用于当前项目
-
-### 项目管理命令
+### 帮助与项目选择
 
 ```bash
-phpbox list
-phpbox ps
-phpbox status [项目名]
+pbox --version
+pbox --help                  # 总览、默认行为和常见示例
+pbox help --all              # 完整手册：包括所有子命令及参数
+pbox help exec
+pbox help env create
+man pbox                    # install.sh 或 deb 安装后可用
 
-phpbox start [项目名]
-phpbox stop [项目名]
-phpbox restart [项目名]
-
-phpbox up [项目名]
-phpbox down [项目名]
+pbox -p workbench status
+pbox -C ~/php-dev/projects/workbench/workbench php -v
 ```
 
-说明：
+所有项目命令支持 `-p/--project NAME`；省略时从当前目录向上识别项目。`-C/--directory DIR` 先切换宿主机工作目录。常规命令也接受命令后的 `-p/-C`。`php/composer/artisan/think` 是透传命令，PHPBox 参数必须放在命令之前。
 
-- `phpbox ps` 是 `status` 的快捷写法
-- `phpbox up` 是 `start` 的快捷写法
-- `phpbox stop` 只停止容器
-- `phpbox down` 会执行 `docker compose down`，停止并移除项目容器
+`list` 始终列出全部项目；`status/ps` 默认查看当前项目，在项目外则查看全部。`--all` 强制查看全部，与指定项目互斥。
+
+```bash
+pbox list
+pbox list -q                 # 仅项目名，不连接 Docker
+pbox list --json
+pbox status workbench --json
+pbox status --all --check    # 任一项目未运行/不健康或无项目时失败
+```
+
+查询命令默认只表示“查询是否成功”：已停止项目仍返回 0；使用 `status --check` 才按健康状态判断。Docker 不可用时显示未知并返回非零，不再把查询失败当成全部停止。
+
+### 项目生命周期
+
+| 命令 | 行为 |
+| --- | --- |
+| `start [NAME]` / `up [NAME]` | 启动项目，必要时启动绑定的 PHP 环境 |
+| `stop [NAME]` | 停止项目容器，保留容器 |
+| `restart [NAME]` | 重启现有容器，不重新创建，不应用新镜像/Compose 配置 |
+| `build [NAME]` / `rebuild [NAME]` | 同义命令，仅构建独立项目镜像，支持 `--no-cache` |
+| `recreate [NAME]` | 使用现有镜像和配置重新创建容器，不执行构建 |
+| `down [NAME]` | 移除项目容器，保留代码、配置和命名数据卷 |
+
+`recreate/down` 会替换或移除容器可写层。共享项目的 `stop/down/restart/recreate` 不会停止或重建共享 PHP；需要操作共享 PHP 时使用 `env` 命令。
+
+**行为变化：** 独立项目的 `restart` 现在只重启容器。原先构建后执行 `restart` 的流程应改为：
+
+```bash
+pbox build --no-cache
+pbox recreate
+```
+
+### 执行命令与管道
+
+```bash
+pbox -p workbench php -r 'echo PHP_VERSION;'
+pbox php -d memory_limit=1G script.php
+pbox composer --no-interaction install
+pbox artisan migrate
+pbox think queue:listen
+pbox shell                  # 默认 php，优先 zsh/bash/sh
+pbox shell nginx
+pbox -p workbench exec -T mysql -- mysql --defaults-extra-file=/tmp/client.cnf < backup.sql
+pbox exec -u root -w /tmp php -- ls -la
+pbox -T php script.php > result.txt
+```
+
+数据库导入示例要求容器内已准备好 `/tmp/client.cnf` 客户端凭据配置。
+
+`php/composer/artisan/think` 保留参数原始顺序和内容。`pbox php --help` 查看 PHP 自身帮助，`pbox help php` 查看 PHPBox 包装层说明；参数前的一个 `--` 分隔符会被移除。`exec` 的 PHPBox 选项放在服务名之前，服务名后的内容属于目标命令。
+
+自动终端模式要求 stdin 和 stdout 都是终端；`-T/--no-tty` 禁用伪终端，`-t/--tty` 强制启用。`exec/shell` 支持 `-u/--user` 和 `-w/--workdir`，后者必须是容器内绝对路径。服务支持 `php/nginx/mysql/redis/cron`；共享模式下 `cron` 与 `php` 路由到同一环境容器。
+
+PHP 和 Composer 自动映射当前代码子目录；Artisan 和 ThinkPHP 命令从代码根目录执行框架入口文件。独立项目遵循 Compose 用户配置，共享 PHP 默认使用宿主机 UID:GID。
 
 ### 日志与诊断
 
 ```bash
-phpbox logs [项目名]
-phpbox logs [项目名] --service php
-phpbox logs [项目名] --service nginx
-phpbox logs [项目名] --service mysql
-phpbox logs [项目名] --service redis
-phpbox logs [项目名] --no-follow
-
-phpbox doctor
+pbox logs                   # 最近 200 行，输出后退出
+pbox logs -f --service php --tail 100 --since 1h --timestamps
+pbox logs workbench --service cron --tail all --no-color
+pbox doctor
+pbox doctor --json
 ```
 
-说明：
+**行为变化：** `logs` 默认不再持续跟踪，使用 `-f/--follow` 开启；`--no-follow` 仍可使用。`--since` 支持 Docker 接受的相对时长和时间格式。重定向时自动禁用 Compose 颜色，输出及时刷新。
 
-- `phpbox logs` 默认持续追踪日志
-- 如果只想看当前日志，不持续输出，使用 `--no-follow`
-- `doctor` 会检查 Docker、Compose、终端环境和日志目录等基础条件
+共享项目默认包含项目 Compose 与共享 PHP 环境日志，来自不同来源的输出按到达顺序显示。共享 PHP 日志可能包含其他绑定项目，不能按项目隔离；`--service php/cron` 在共享模式下读取同一个环境日志。
 
-### 构建镜像
+`doctor` 检查 Docker 命令、Compose、Docker 守护进程，缺少任何必要条件都失败。无桌面的服务器不需要终端模拟器或系统打开器。
+
+### 共享 PHP 环境
 
 ```bash
-phpbox build [项目名]
-phpbox build [项目名] --no-cache
+pbox env list
+pbox env list -q             # 仅环境 ID，不连接 Docker
+pbox env inspect php84 --json
+pbox env create php84 --php 8.4 --extension redis --extension gd --start
+pbox env start php84
+pbox env stop php84 --yes
+pbox env restart php84 --yes
+pbox env rebuild php84 --no-cache --yes
+pbox env delete unused-env --yes
 
-phpbox rebuild [项目名]
-phpbox rebuild [项目名] --no-cache
+pbox -p workbench use php72 --check
+pbox -p workbench use php72
+pbox recover workbench
 ```
 
-说明：
+环境可按完整 ID 或唯一名称选择，重名时使用 ID。`create` 生成标准环境配置并构建镜像，默认不启动，`--start` 构建后启动；失败时保留环境文件，可用 `env rebuild` 重试。`--extension` 可重复，省略时不额外安装扩展；安装器按 PHP 版本选择兼容扩展。`--proxy URL` 用于构建和终端代理快捷命令，不自动启用运行时全局代理，宿主机回环地址会转换。
 
-- `build` 会执行当前项目的 `docker compose build`
-- `rebuild` 当前也执行构建，但通常语义上表示“重新构建”
-- `--no-cache` 会强制忽略 Docker 层缓存
-- 构建时会实时输出日志
-- 构建成功后不会自动重启容器
+停止、重启、重建共享环境会影响所有绑定项目，执行前显示影响范围并确认；非交互脚本需显式传 `--yes`。重建会更新运行中的环境。这些操作复用 GUI 的任务检查和操作锁。删除环境需要确认，并拒绝删除仍被项目绑定的环境。
 
-如果你希望新镜像生效，通常还需要执行：
+`use` 允许升降版本，不根据 `composer.json/lock` 阻止切换，也不导入旧 `php.ini`。`--check` 检查迁移和目标运行条件，不修改绑定，但可能启动目标环境并生成项目身份文件。切换使用现有路由验证和恢复逻辑；中断或失败后存在未完成记录时可执行 `recover` 恢复原环境。
+
+### 输出、退出码和补全
+
+查询结果写入 stdout，PHPBox 进度和错误写入 stderr。`--json` 输出使用固定英文键；`-q/--quiet` 隐藏 PHPBox 进度，不隐藏错误和被执行程序的输出。`--verbose` 显示完整底层操作错误。
+
+退出码：`0` 成功、`1` 操作失败、`2` 参数错误、`130` Ctrl+C、`143` SIGTERM、`141` 输出管道关闭。容器命令保留自身退出码。正常中断不打印 Python 堆栈，本地子进程会被回收。
+
+`install.sh` 和 deb 安装 Bash/Zsh/Fish 补全及 man 手册，也可以手动加载：
 
 ```bash
-phpbox restart
+source <(pbox completion bash)
+# Zsh：先执行 autoload -Uz compinit && compinit
+source <(pbox completion zsh)
+# Fish：
+pbox completion fish | source
 ```
 
-或者：
-
-```bash
-phpbox down
-phpbox up
-```
-
-### 进入容器与执行命令
-
-```bash
-phpbox shell
-phpbox shell php
-phpbox shell nginx
-phpbox shell mysql
-phpbox shell redis
-
-phpbox exec php -- php -v
-phpbox exec php -- ls -la
-phpbox exec nginx -- nginx -t
-phpbox exec mysql -- mysql --version
-phpbox exec redis -- redis-cli ping
-```
-
-说明：
-
-- `phpbox shell` 默认进入 `php` 容器
-- `phpbox shell nginx` 可进入 `nginx` 容器
-- `phpbox shell mysql|redis` 可进入对应服务容器
-- `phpbox exec` 适合执行一次性命令
-
-### PHP / Composer / 框架命令
-
-```bash
-phpbox php -v
-phpbox php -m
-
-phpbox composer install
-phpbox composer update
-
-phpbox artisan migrate
-phpbox artisan route:list
-
-phpbox think queue:listen
-phpbox think route:list
-```
-
-说明：
-
-- 这些命令都要求你当前位于项目目录或其子目录中
-- 对 `php` 容器命令，phpbox 会尽量把当前代码子目录映射到容器中的对应工作目录
-
-### 在项目目录中直接执行
-
-如果当前目录属于某个项目，以下命令会自动选中当前项目：
-
-```bash
-phpbox ps
-phpbox status
-phpbox up
-phpbox stop
-phpbox down
-phpbox restart
-phpbox logs
-phpbox logs --no-follow
-phpbox build
-phpbox rebuild --no-cache
-phpbox shell
-phpbox shell nginx
-phpbox php -v
-phpbox composer install
-phpbox artisan migrate
-phpbox think queue:listen
-phpbox exec php -- php -m
-```
-
-这也是 phpbox CLI 最推荐的使用方式。
-
-## 常见工作流
-
-### 查看所有项目
-
-```bash
-phpbox list
-```
-
-### 启动一个指定项目
-
-```bash
-phpbox up myproject
-```
-
-### 在项目目录中执行 Composer
-
-```bash
-cd ~/php-dev/projects/myproject/myproject
-phpbox composer install
-```
-
-### 在项目目录中执行 Laravel Artisan
-
-```bash
-cd ~/php-dev/projects/myproject/myproject
-phpbox artisan migrate
-```
-
-### 在项目目录中执行 ThinkPHP 命令
-
-```bash
-cd ~/php-dev/projects/myproject/myproject
-phpbox think queue:listen
-```
-
-### 重新构建镜像并重启
-
-```bash
-phpbox rebuild --no-cache
-phpbox restart
-```
-
-### 查看 PHP 服务日志
-
-```bash
-phpbox logs --service php
-```
+补全包含命令、项目名、环境 ID 和服务名，候选查询不启动或连接 Docker。项目创建、交互配置编辑等仍可通过 `pbox gui --new-project` 和图形界面操作。
 
 ## 构建与发布
 

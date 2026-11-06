@@ -6,7 +6,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from core.process import run_process
+from core.process import run_process, run_attached
 from typing import List, Optional, Callable, Tuple
 from dataclasses import dataclass
 
@@ -110,9 +110,10 @@ class DockerManager:
     _compose_checked: bool = False
     _APP_SERVICES = ["php", "nginx"]
 
-    def __init__(self, project_path: Path, cancel=None):
+    def __init__(self, project_path: Path, cancel=None, on_output=None):
         self.project_path = Path(project_path)
         self.cancel = cancel
+        self.on_output = on_output
         self._detect_compose()
 
     def _detect_compose(self):
@@ -176,7 +177,7 @@ class DockerManager:
                 run_env.update(env)
 
             result = run_process(self._compose_cmd + args, cwd=str(self.project_path),
-                                 env=run_env, cancel=self.cancel, timeout=300)
+                                 env=run_env, cancel=self.cancel, on_output=self.on_output, timeout=300)
             if result.returncode == 0:
                 return DockerResult(success=True, output=result.stdout)
             else:
@@ -198,7 +199,7 @@ class DockerManager:
         if read_binding(self.project_path):
             from core.runtime import ProjectRuntime
             try:
-                ProjectRuntime(self.project_path, self.cancel).lifecycle("up")
+                ProjectRuntime(self.project_path, self.cancel, self.on_output).lifecycle("up")
                 return DockerResult(True)
             except Exception as exc:
                 return DockerResult(False, error=str(exc))
@@ -295,7 +296,7 @@ class DockerManager:
         if read_binding(self.project_path):
             from core.runtime import ProjectRuntime
             try:
-                ProjectRuntime(self.project_path, self.cancel).lifecycle("stop")
+                ProjectRuntime(self.project_path, self.cancel, self.on_output).lifecycle("stop")
                 return DockerResult(True)
             except Exception as exc:
                 return DockerResult(False, error=str(exc))
@@ -317,7 +318,7 @@ class DockerManager:
         if read_binding(self.project_path):
             from core.runtime import ProjectRuntime
             try:
-                ProjectRuntime(self.project_path, self.cancel).lifecycle("restart")
+                ProjectRuntime(self.project_path, self.cancel, self.on_output).lifecycle("restart")
                 return DockerResult(True)
             except Exception as exc:
                 return DockerResult(False, error=str(exc))
@@ -331,28 +332,21 @@ class DockerManager:
             return DockerResult(False, error=str(exc))
 
     def _independent_restart(self) -> DockerResult:
-        port = self.get_project_port()
-        if port:
-            from core.project import get_port_usage
+        return self._run_command(["restart"])
 
-            project_name = self.project_path.name
-            usage = get_port_usage(port, project_name, include_configured_projects=False)
-            if usage:
-                return DockerResult(
-                    success=False,
-                    error=f"端口 {port} 已被 {usage} 占用，无法重启项目",
-                    port_conflict=True,
-                    port_conflict_detail=f"端口 {port} 已被 {usage} 占用"
-                )
-
-        down_result = self._independent_down()
-        if not down_result.success:
-            return DockerResult(
-                success=False,
-                error=down_result.error.strip() or "停止现有容器失败，无法继续重启"
-            )
-
-        return self._independent_up()
+    def recreate(self) -> DockerResult:
+        from core.environment import operation_lock, read_binding
+        if read_binding(self.project_path):
+            from core.runtime import ProjectRuntime
+            try:
+                ProjectRuntime(self.project_path, self.cancel, self.on_output).lifecycle("recreate")
+                return DockerResult(True)
+            except Exception as exc:
+                return DockerResult(False, error=str(exc))
+        with operation_lock(self.project_path):
+            if (self.project_path / '.phpbox/switch.json').exists():
+                raise RuntimeError('环境切换未完成，请先恢复原环境')
+            return self._run_command(['up', '-d', '--no-build', '--force-recreate'])
 
     def down(self, remove_images: bool = False) -> DockerResult:
         """删除服务"""
@@ -360,7 +354,7 @@ class DockerManager:
         if read_binding(self.project_path):
             from core.runtime import ProjectRuntime
             try:
-                ProjectRuntime(self.project_path, self.cancel).lifecycle("down")
+                ProjectRuntime(self.project_path, self.cancel, self.on_output).lifecycle("down")
                 return DockerResult(True)
             except Exception as exc:
                 return DockerResult(False, error=str(exc))
@@ -413,12 +407,11 @@ class DockerManager:
         if no_cache:
             args.append("--no-cache")
 
-        result = subprocess.run(
-            self._compose_cmd + args,
-            cwd=str(self.project_path),
-            env=env
-        )
-        return result.returncode
+        from core.environment import operation_lock
+        with operation_lock(self.project_path):
+            if (self.project_path / '.phpbox/switch.json').exists():
+                raise RuntimeError('环境切换未完成，请先恢复原环境')
+            return run_attached(self._compose_cmd + args, cwd=str(self.project_path), env=env)
 
     def get_logs(self, service: Optional[str] = None,
                  follow: bool = False) -> subprocess.Popen:

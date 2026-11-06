@@ -6,6 +6,35 @@ import subprocess
 import time
 
 
+def run_attached(command, cwd=None, env=None, tty=False):
+    process = subprocess.Popen(command, cwd=cwd, env=env, start_new_session=not tty)
+    completed = False
+    try:
+        code = process.wait()
+        completed = True
+        return code
+    finally:
+        if not completed:
+            try:
+                if tty:
+                    process.terminate()
+                else:
+                    os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    if tty:
+                        process.kill()
+                    else:
+                        os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+
+
 def run_process(command, cwd=None, env=None, cancel=None, on_output=None, timeout=300):
     if cancel is not None and cancel.is_set():
         raise InterruptedError("操作已取消")

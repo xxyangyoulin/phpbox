@@ -1,0 +1,124 @@
+.TH PBOX 1 "2026-11" "PHPBox" "User Commands"
+.SH NAME
+pbox, phpbox \- manage PHP Docker projects and shared PHP environments
+.SH SYNOPSIS
+.B pbox
+.RI [ options ] " command " [ arguments ]
+.br
+.B pbox help
+.RI [ command " [subcommand]]"
+.br
+.B pbox help --all
+.SH DESCRIPTION
+Without a command, open the graphical application. CLI commands work without a graphical session.
+Project data is stored under ~/php-dev/projects; shared environments are under ~/php-dev/environments.
+Use --help for examples, or help --all for the complete command reference in Chinese.
+.SH GLOBAL OPTIONS
+.TP
+.BR -p ", " --project " NAME"
+Select a project explicitly. Otherwise detect the project from the current directory.
+.TP
+.BR -C ", " --directory " DIR"
+Change the host working directory before running the command.
+.TP
+.BR -q ", " --quiet
+Suppress PHPBox progress, not errors or child program output. list prints names only; env list prints IDs only.
+.TP
+.BR -T ", " --no-tty
+Disable the pseudo-terminal. Suitable for pipelines and redirection.
+.TP
+.BR -t ", " --tty
+Force a pseudo-terminal. By default both stdin and stdout must be terminals.
+.TP
+.B --verbose
+Show full underlying operation errors.
+.TP
+.B --version
+Print the application version and exit.
+.SH COMMANDS
+.TP
+.B list
+List all projects. Supports --json and -q.
+.TP
+.BR status ", " ps " [NAME]"
+Show the selected project, or all projects outside a project directory. --all forces all projects.
+--check fails unless every selected project is healthy. Supports --json.
+.TP
+.BR start ", " up " [NAME]"
+Start project services and the shared PHP environment if needed.
+.TP
+.B stop [NAME]
+Stop project services; retain containers and the shared PHP environment.
+.TP
+.B restart [NAME]
+Restart existing project containers. Does not apply new images or recreate shared PHP.
+.TP
+.B recreate [NAME]
+Recreate project containers from existing images/configuration; retain named volumes, replace container writable layers.
+.TP
+.B down [NAME]
+Remove project containers, retain project files and named volumes. Shared PHP remains running.
+.TP
+.BR build ", " rebuild " [NAME] [--no-cache]"
+Build independent project images only; these are aliases. Run recreate to apply new images.
+.TP
+.B logs [NAME]
+Print the last 200 lines and exit. -f follows; --tail N|all, --since TIME,
+--timestamps, --no-color and --service php|nginx|mysql|redis|cron are supported.
+Shared environment logs may contain output from other projects.
+.TP
+.B shell [OPTIONS] [SERVICE]
+Open a container shell; default service is php. Supports -u USER, -w WORKDIR, -T and -t.
+.TP
+.B exec [OPTIONS] SERVICE [--] COMMAND [ARGS...]
+Execute a command verbatim. PHPBox options must precede SERVICE.
+.TP
+.BR php ", " composer ", " artisan ", " think " [ARGS...]"
+Forward arguments verbatim, including --help. Put PHPBox options before the command.
+Use pbox help php (etc.) for wrapper help. A leading -- separator is removed.
+PHP and Composer preserve the current code subdirectory; framework commands use the code root.
+.TP
+.B env ACTION
+Actions: list, inspect, create, start, stop, restart, rebuild, delete.
+Select environments by full ID or unique name. list/inspect support --json.
+create NAME --php VERSION accepts repeated --extension EXT, --proxy URL and --start.
+It builds but does not start by default; failed builds retain files for retry.
+rebuild accepts --no-cache and updates running environments.
+Stopping, restarting or rebuilding bound environments requires confirmation (-y/--yes for scripts).
+delete always requires confirmation and refuses bound environments.
+.TP
+.B use ENV [--check] [--json]
+Switch the selected project to a PHP environment. Supports upgrades and downgrades,
+without enforcing Composer requirements or importing the old php.ini.
+--check validates without switching; it may start the target environment and generate project identity.
+.TP
+.B recover [NAME]
+Restore an incomplete project environment switch using its recovery record.
+.TP
+.B doctor [--json]
+Check Docker, Compose and daemon connectivity. Missing required components fail the command.
+.TP
+.B completion bash|zsh|fish
+Print a completion script; source it or install it in the shell completion directory.
+.TP
+.B gui [--hide|--new-project]
+Open the GUI, optionally hidden or with the new-project dialog.
+.SH OUTPUT AND EXIT STATUS
+Results use stdout; PHPBox progress and errors use stderr. JSON uses stable English field names.
+0 means success, 1 operational failure, 2 invalid arguments, 130 interrupt, 143 SIGTERM,
+141 closed output pipe. Container command exit statuses are preserved.
+Stopped projects do not fail status unless --check is used; Docker query failures always fail.
+.SH EXAMPLES
+.nf
+pbox -p workbench php -r 'echo PHP_VERSION;'
+pbox -C ~/php-dev/projects/demo composer install
+pbox exec -T mysql -- mysql --defaults-extra-file=/tmp/client.cnf < backup.sql
+pbox logs -f --service php --since 1h
+pbox env create php84 --php 8.4 --extension redis --start
+pbox -p workbench use php84 --check
+pbox env restart php84 --yes
+pbox list --json
+pbox help --all
+.fi
+.SH SEE ALSO
+docker(1), php(1)

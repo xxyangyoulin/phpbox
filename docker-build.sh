@@ -241,7 +241,7 @@ echo ">>> AppImage 构建完成"
 build_deb() {
     echo ">>> 构建 .deb 包..."
 
-    VERSION="${VERSION:-2.0.0}"
+    VERSION="${VERSION:-2.1.0}"
     ARCH="amd64"
 
     # 清理可能存在的旧容器
@@ -297,6 +297,8 @@ mkdir -p \$DEB_DIR/opt/phpbox
 cp -r dist/phpbox/. \$DEB_DIR/opt/phpbox/
 printf '#!/bin/sh\nexec /opt/phpbox/phpbox \"\\\$@\"\n' > \$DEB_DIR/usr/bin/phpbox
 chmod 755 \$DEB_DIR/usr/bin/phpbox
+ln -s phpbox \$DEB_DIR/usr/bin/pbox
+sh /src/resources/install-cli.sh \$DEB_DIR/usr
 
 # 复制 desktop 文件
 cp phpbox.desktop \$DEB_DIR/usr/share/applications/
@@ -335,7 +337,7 @@ show_help() {
     echo "  --help      显示帮助"
     echo ""
     echo "环境变量:"
-    echo "  VERSION     设置版本号 (默认: 2.0.0)"
+    echo "  VERSION     设置版本号 (默认: 2.1.0)"
     echo "  http_proxy  代理设置"
     echo ""
     echo "示例:"
@@ -343,7 +345,7 @@ show_help() {
     echo "  $0 --appimage         # 构建 AppImage"
     echo "  $0 --deb              # 构建 .deb"
     echo "  $0 --all              # 构建所有格式"
-    echo "  VERSION=2.0.0 $0 --deb  # 指定版本号"
+    echo "  VERSION=2.1.0 $0 --deb  # 指定版本号"
 }
 
 # 解析参数

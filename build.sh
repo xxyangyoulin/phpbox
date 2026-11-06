@@ -123,7 +123,7 @@ build_deb() {
     fi
 
     DEB_DIR="deb_package"
-    VERSION="2.0.0"
+    VERSION="2.1.0"
     ARCH="amd64"
 
     rm -rf "$DEB_DIR"
@@ -155,6 +155,7 @@ EOF
     chmod 755 "$DEB_DIR/usr/bin/phpbox"
     ln -s phpbox "$DEB_DIR/usr/bin/pbox"
     cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
+    sh resources/install-cli.sh "$DEB_DIR/usr"
 
     # 构建
     dpkg-deb --build "$DEB_DIR" "dist/phpbox_${VERSION}_${ARCH}.deb"

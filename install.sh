@@ -71,6 +71,10 @@ EOF
     sudo chmod +x /usr/local/bin/phpbox
     sudo ln -sfn phpbox /usr/local/bin/pbox
 
+    if [ -f "$SCRIPT_DIR/resources/install-cli.sh" ]; then
+        sudo sh "$SCRIPT_DIR/resources/install-cli.sh" /usr
+    fi
+
     # 复制 desktop 文件
     sudo cp "$SCRIPT_DIR/phpbox.desktop" /usr/share/applications/
     sudo chmod 644 /usr/share/applications/phpbox.desktop
@@ -98,6 +102,10 @@ uninstall() {
     echo ">>> 卸载 PHP 开发环境管理器..."
     sudo rm -f /usr/local/bin/phpbox
     sudo rm -f /usr/local/bin/pbox
+    sudo rm -f /usr/share/bash-completion/completions/pbox /usr/share/bash-completion/completions/phpbox
+    sudo rm -f /usr/share/zsh/site-functions/_pbox
+    sudo rm -f /usr/share/fish/vendor_completions.d/pbox.fish /usr/share/fish/vendor_completions.d/phpbox.fish
+    sudo rm -f /usr/share/man/man1/pbox.1 /usr/share/man/man1/phpbox.1
     sudo rm -rf "$INSTALL_DIR"
     sudo rm -f /usr/share/applications/phpbox.desktop
     sudo rm -f /usr/share/icons/hicolor/*/apps/phpbox.png
