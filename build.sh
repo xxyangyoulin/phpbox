@@ -123,7 +123,7 @@ build_deb() {
     fi
 
     DEB_DIR="deb_package"
-    VERSION="1.0.24"
+    VERSION="2.0.0"
     ARCH="amd64"
 
     rm -rf "$DEB_DIR"

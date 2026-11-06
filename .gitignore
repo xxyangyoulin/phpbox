@@ -17,6 +17,9 @@ ENV/
 build/
 dist/
 
+# Local design previews
+/output/design/
+
 # Debian package
 deb_package/
 

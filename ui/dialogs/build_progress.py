@@ -6,11 +6,11 @@ from PyQt6.QtCore import Qt, QTimer
 
 from qfluentwidgets import (
     SubtitleLabel, BodyLabel, CaptionLabel,
-    ProgressBar, PushButton, CardWidget,
-    TextEdit, FluentIcon as FIF, IconWidget
+    ProgressBar, PushButton,
+    FluentIcon as FIF, IconWidget
 )
 
-from ui.styles import FluentDialog
+from ui.styles import LogTextEdit, SurfaceCard, FluentDialog
 
 
 class BuildProgressDialog(FluentDialog):
@@ -60,7 +60,7 @@ class BuildProgressDialog(FluentDialog):
         layout.addWidget(self.stage_widget)
 
         # 日志区域卡片
-        log_card = CardWidget(self)
+        log_card = SurfaceCard(self)
         log_layout = QVBoxLayout(log_card)
         log_layout.setContentsMargins(12, 12, 12, 12)
         log_layout.setSpacing(8)
@@ -74,21 +74,10 @@ class BuildProgressDialog(FluentDialog):
         log_layout.addLayout(log_header)
 
         # 日志文本区域
-        self.log_text = TextEdit()
+        self.log_text = LogTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setPlaceholderText("等待构建输出...")
         self.log_text.setMinimumHeight(200)
-        self.log_text.setStyleSheet("""
-            TextEdit {
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-                border: 1px solid #3c3c3c;
-                border-radius: 6px;
-                font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-                font-size: 12px;
-                padding: 8px;
-            }
-        """)
         log_layout.addWidget(self.log_text)
         layout.addWidget(log_card, 1)
 

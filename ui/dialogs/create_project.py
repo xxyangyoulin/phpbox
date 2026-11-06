@@ -15,7 +15,7 @@ from pathlib import Path
 from qfluentwidgets import (
     SubtitleLabel, BodyLabel, CaptionLabel, StrongBodyLabel,
     LineEdit, PushButton, PrimaryPushButton, CheckBox,
-    ComboBox, SpinBox, CardWidget, TextEdit, FluentIcon as FIF,
+    ComboBox, SpinBox, TextEdit, FluentIcon as FIF,
     InfoBar, InfoBarPosition, SegmentedWidget, isDarkTheme,
     TransparentToolButton, ScrollArea
 )
@@ -32,7 +32,7 @@ from ui.worker import register_worker
 from core.docker import DockerManager
 from core.settings import Settings
 from ui.widgets.extension_selector import ExtensionSelector
-from ui.styles import FluentDialog
+from ui.styles import SurfaceCard, FluentDialog
 from ui.dialogs.build_progress import BuildProgressDialog
 
 
@@ -359,7 +359,7 @@ class CreateProjectDialog(FluentDialog):
         layout.setContentsMargins(0, 0, 4, 0)
 
         # ── 基本信息卡片 ─────────────────────────────────────
-        basic_card = CardWidget()
+        basic_card = SurfaceCard()
         bc_layout = QVBoxLayout(basic_card)
         bc_layout.setSpacing(14)
         bc_layout.setContentsMargins(20, 18, 20, 18)
@@ -427,7 +427,7 @@ class CreateProjectDialog(FluentDialog):
         layout.addWidget(basic_card)
 
         # ── 框架选择卡片 ─────────────────────────────────────
-        framework_card = CardWidget()
+        framework_card = SurfaceCard()
         fc_layout = QVBoxLayout(framework_card)
         fc_layout.setSpacing(10)
         fc_layout.setContentsMargins(20, 16, 20, 16)
@@ -452,7 +452,7 @@ class CreateProjectDialog(FluentDialog):
         layout.addWidget(framework_card)
 
         # ── 高级设置（可折叠）────────────────────────────────
-        adv_card = CardWidget()
+        adv_card = SurfaceCard()
         adv_outer = QVBoxLayout(adv_card)
         adv_outer.setContentsMargins(20, 10, 20, 10)
         adv_outer.setSpacing(0)
@@ -464,7 +464,7 @@ class CreateProjectDialog(FluentDialog):
         adv_h_row.setContentsMargins(0, 4, 0, 4)
         adv_title = StrongBodyLabel("高级设置")
         adv_hint = CaptionLabel("端口 / 代理")
-        adv_hint.setStyleSheet("color: #64748b;")
+        adv_hint.setTextColor(QColor("#606060"), QColor("#cecece"))
         self._adv_toggle_btn = TransparentToolButton(FIF.CHEVRON_RIGHT, self)
         self._adv_toggle_btn.setFixedSize(20, 20)
         adv_h_row.addWidget(adv_title)
@@ -504,7 +504,7 @@ class CreateProjectDialog(FluentDialog):
         # 代理
         adv_c_layout.addWidget(BodyLabel("构建代理"))
         proxy_hint = CaptionLabel("加速 Docker 构建时的扩展下载，如无需要可留空")
-        proxy_hint.setStyleSheet("color: #64748b;")
+        proxy_hint.setTextColor(QColor("#606060"), QColor("#cecece"))
         adv_c_layout.addWidget(proxy_hint)
 
         self.use_settings_proxy_cb = CheckBox("使用全局设置中的代理")
@@ -524,13 +524,13 @@ class CreateProjectDialog(FluentDialog):
         adv_c_layout.addLayout(proxy_manual_row)
 
         self.proxy_converted = CaptionLabel()
-        self.proxy_converted.setStyleSheet("color: #64748b;")
+        self.proxy_converted.setTextColor(QColor("#606060"), QColor("#cecece"))
         adv_c_layout.addWidget(self.proxy_converted)
 
         # 附加服务
         adv_c_layout.addWidget(BodyLabel("附加服务"))
 
-        mysql_card = CardWidget()
+        mysql_card = SurfaceCard()
         mysql_layout = QVBoxLayout(mysql_card)
         mysql_layout.setContentsMargins(12, 12, 12, 12)
         mysql_layout.setSpacing(8)
@@ -577,7 +577,7 @@ class CreateProjectDialog(FluentDialog):
         ]
         adv_c_layout.addWidget(mysql_card)
 
-        redis_card = CardWidget()
+        redis_card = SurfaceCard()
         redis_layout = QVBoxLayout(redis_card)
         redis_layout.setContentsMargins(12, 12, 12, 12)
         redis_layout.setSpacing(8)
@@ -658,14 +658,14 @@ class CreateProjectDialog(FluentDialog):
         layout = QVBoxLayout(page)
         layout.setSpacing(16)
 
-        card = CardWidget()
+        card = SurfaceCard()
         card_layout = QVBoxLayout(card)
         card_layout.setSpacing(12)
         card_layout.setContentsMargins(20, 20, 20, 20)
 
         self.extensions_hint = CaptionLabel("选择需要预装的 PHP 扩展，后续也可在容器内安装")
         hint = self.extensions_hint
-        hint.setStyleSheet("color: #64748b;")
+        hint.setTextColor(QColor("#606060"), QColor("#cecece"))
         card_layout.addWidget(hint)
 
         self.ext_selector = ExtensionSelector()

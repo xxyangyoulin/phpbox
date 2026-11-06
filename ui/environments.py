@@ -1,16 +1,18 @@
 import json
 import threading
 
-from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QInputDialog
+from PyQt6.QtCore import QThread, Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QInputDialog, QSplitter, QListWidgetItem
 from qfluentwidgets import (BodyLabel, CaptionLabel, ComboBox, InfoBar, LineEdit,
+                            FluentIcon as FIF, FlowLayout, ScrollArea, StrongBodyLabel, setCustomStyleSheet,
                             ListWidget, MessageBox, MessageBoxBase, PrimaryPushButton, PushButton, TextEdit, TitleLabel)
 
 from core.config import PHP_VERSIONS
 from core.environment import EnvironmentManager, read_binding
 from core.runtime import ProjectRuntime
 from ui.dialogs.build_progress import BuildProgressDialog
-from ui.styles import FluentDialog
+from ui.styles import FluentDialog, SurfaceCard, StatusBadge
 from ui.widgets.extension_selector import ExtensionSelector
 from ui.worker import OperationWorker, register_worker
 
@@ -67,6 +69,9 @@ class EnvironmentEditor(FluentDialog):
         self.setWindowTitle('编辑 PHP 环境' if environment else '新建 PHP 环境')
         self.resize(720, 720)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+        layout.addWidget(TitleLabel('编辑 PHP 环境' if environment else '新建 PHP 环境'))
         self.name = LineEdit()
         self.name.setPlaceholderText('环境名称，例如 PHP 8.4 开发环境')
         layout.addWidget(self.name)
@@ -146,35 +151,111 @@ class EnvironmentEditor(FluentDialog):
 class EnvironmentsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName('environmentsPage')
+        self.setObjectName('php_environments')
         self.rows = []
         self.loading = False
         self.selected_id = None
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
         layout.addWidget(TitleLabel('PHP 环境'))
+        subtitle = CaptionLabel('在项目之间共享 PHP、配置与扩展。不同配置可创建独立环境。')
+        subtitle.setWordWrap(True)
+        subtitle.setTextColor(QColor('#606060'), QColor('#cecece'))
+        layout.addWidget(subtitle)
         row = QHBoxLayout()
-        for text, action in [('新建环境', self.create), ('刷新', self.refresh)]:
-            button = PushButton(text)
-            button.clicked.connect(action)
-            row.addWidget(button)
+        create = PrimaryPushButton(FIF.ADD, '新建环境')
+        create.clicked.connect(self.create)
+        row.addWidget(create)
+        self.refresh_button = PushButton(FIF.SYNC, '刷新')
+        self.refresh_button.clicked.connect(self.refresh)
+        row.addWidget(self.refresh_button)
         row.addStretch()
+        self.summary = CaptionLabel('尚无环境')
+        row.addWidget(self.summary)
         layout.addLayout(row)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(12)
+        list_card = SurfaceCard()
+        list_layout = QVBoxLayout(list_card)
+        list_layout.setContentsMargins(8, 12, 8, 8)
         self.list = ListWidget()
+        self.list.setMinimumWidth(190)
+        self.list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        setCustomStyleSheet(self.list, 'QListWidget { background: transparent; border: none; }',
+                            'QListWidget { background: transparent; border: none; }')
         self.list.currentRowChanged.connect(self.show_details)
-        layout.addWidget(self.list, 1)
-        self.details = TextEdit()
-        self.details.setReadOnly(True)
-        layout.addWidget(self.details, 1)
-        row = QHBoxLayout()
+        list_layout.addWidget(self.list)
+        self.splitter.addWidget(list_card)
+
+        scroll = ScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet('ScrollArea { background: transparent; border: none; }')
+        detail_card = SurfaceCard()
+        detail_layout = QVBoxLayout(detail_card)
+        detail_layout.setContentsMargins(20, 20, 20, 20)
+        detail_layout.setSpacing(16)
+        self.environment_title = StrongBodyLabel('选择一个 PHP 环境')
+        self.environment_title.setWordWrap(True)
+        detail_layout.addWidget(self.environment_title)
+        badges = QHBoxLayout()
+        self.version_badge = StatusBadge('PHP', tone='accent')
+        self.state_badge = StatusBadge('未选择')
+        badges.addWidget(self.version_badge)
+        badges.addWidget(self.state_badge)
+        badges.addStretch()
+        detail_layout.addLayout(badges)
+        self.detail_fields = {}
+        for key, title in [('projects', '使用此环境的项目'), ('runtime', '运行配置'),
+                           ('extensions', '扩展'), ('path', '环境目录')]:
+            field_title = CaptionLabel(title)
+            field_title.setTextColor(QColor('#606060'), QColor('#cecece'))
+            detail_layout.addWidget(field_title)
+            value = BodyLabel('—')
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            detail_layout.addWidget(value)
+            self.detail_fields[key] = value
+
+        actions = QWidget()
+        row = FlowLayout(actions)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
         self.actions = []
-        for label, action in [('启动', 'start'), ('停止', 'stop'), ('配置与扩展', 'edit'),
+        for label, action in [('配置与扩展', 'edit'), ('启动', 'start'), ('停止', 'stop'),
                               ('重建', 'build'), ('重命名', 'rename'), ('删除', 'delete')]:
-            button = PushButton(label)
+            button = PrimaryPushButton(label) if action == 'edit' else PushButton(label)
             button.clicked.connect(lambda checked=False, a=action: self.operate(a))
             self.actions.append(button)
             row.addWidget(button)
-        layout.addLayout(row)
+        detail_layout.addWidget(actions)
+        self.diagnostics_button = PushButton(FIF.CODE, '查看运行信息')
+        self.diagnostics_button.setCheckable(True)
+        detail_layout.addWidget(self.diagnostics_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.details = TextEdit()
+        self.details.setReadOnly(True)
+        self.details.setMinimumHeight(180)
+        self.details.setVisible(False)
+        self.diagnostics_button.toggled.connect(self.details.setVisible)
+        detail_layout.addWidget(self.details)
+        detail_layout.addStretch()
+        scroll.setWidget(detail_card)
+        detail_card.setAutoFillBackground(False)
+        self.splitter.addWidget(scroll)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 2)
+        layout.addWidget(self.splitter, 1)
         self.show_details()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        orientation = Qt.Orientation.Vertical if self.width() < 780 else Qt.Orientation.Horizontal
+        if self.splitter.orientation() != orientation:
+            self.splitter.setOrientation(orientation)
+            self.splitter.setSizes([180, 380] if orientation == Qt.Orientation.Vertical else [260, 520])
 
     def create(self):
         dialog = EnvironmentEditor(self)
@@ -188,6 +269,7 @@ class EnvironmentsPage(QWidget):
         if isinstance(selected_id, str):
             self.selected_id = selected_id
         self.loading = True
+        self.refresh_button.setEnabled(False)
         def fetch():
             manager = EnvironmentManager()
             rows = []
@@ -207,18 +289,26 @@ class EnvironmentsPage(QWidget):
 
     def failed(self, message):
         self.loading = False
+        self.refresh_button.setEnabled(True)
+        self.summary.setText('刷新失败')
         self.details.setPlainText(message)
+        self.diagnostics_button.setChecked(True)
 
     def loaded(self, rows):
         self.loading = False
         self.rows = rows
+        self.refresh_button.setEnabled(True)
+        self.summary.setText(f'{len(rows)} 个环境 · {sum(bool(row[1]) for row in rows)} 个运行中')
         self.list.blockSignals(True)
         self.list.clear()
         selected = 0
         for index, (env, running, info, projects) in enumerate(rows):
             version = info.get('version', env.php_version + '（配置版本）')
             status = '操作中' if info.get('busy') else '运行中' if running else '已停止 / 未构建'
-            self.list.addItem(f'{env.name} · PHP {version} · {status} · {len(projects)} 个项目')
+            item = QListWidgetItem(FIF.CODE.icon(color=QColor('#808080')), f'{env.name}\nPHP {env.php_version} · {status}')
+            item.setSizeHint(QSize(180, 68))
+            item.setToolTip(f'{env.name} · PHP {version} · {len(projects)} 个项目')
+            self.list.addItem(item)
             if env.id == self.selected_id:
                 selected = index
         self.list.setCurrentRow(selected if rows else -1)
@@ -230,16 +320,32 @@ class EnvironmentsPage(QWidget):
         valid = 0 <= index < len(self.rows)
         for button in self.actions:
             button.setEnabled(valid)
+        self.diagnostics_button.setEnabled(valid)
+        self.version_badge.setVisible(valid)
+        self.state_badge.setVisible(valid)
         if not valid:
-            self.details.setPlainText('新建一个 PHP 环境，然后在项目中选择它。多个项目可以使用同一环境。')
+            self.environment_title.setText('创建你的第一个 PHP 环境')
+            self.detail_fields['projects'].setText('新建环境后，在项目的更多菜单中选择「切换 PHP 环境」。')
+            for key in ('runtime', 'extensions', 'path'):
+                self.detail_fields[key].setText('—')
+            self.details.clear()
+            self.diagnostics_button.setChecked(False)
             return
         env, running, info, projects = self.rows[index]
         self.selected_id = env.id
-        content = [f'环境：{env.name}', '绑定项目：' + ('、'.join(p.name for p in projects) or '无'),
-                   '扩展声明：' + ', '.join(env.extensions), f'目录：{env.path}']
-        if info:
-            content.append('实际运行信息：\n' + json.dumps(info, ensure_ascii=False, indent=2))
-        self.details.setPlainText('\n'.join(content))
+        self.environment_title.setText(env.name)
+        self.version_badge.setText('PHP ' + info.get('version', env.php_version))
+        self.state_badge.setText('操作中' if info.get('busy') else '运行中' if running else '已停止 / 未构建')
+        self.state_badge.setTone('warning' if info.get('busy') else 'success' if running else 'neutral')
+        self.detail_fields['projects'].setText('、'.join(p.name for p in projects) or '暂无绑定项目')
+        self.detail_fields['runtime'].setText(
+            info.get('error') or
+            (f"内存限制 {info.get('memory_limit', '—')}  ·  时区 {info.get('timezone', '—')}" if running
+             else '启动环境后可查看实际配置')
+        )
+        self.detail_fields['extensions'].setText(', '.join(info.get('extensions', env.extensions)) or '无')
+        self.detail_fields['path'].setText(str(env.path))
+        self.details.setPlainText(json.dumps(info, ensure_ascii=False, indent=2) if info else '环境尚未运行。')
 
     def operate(self, action):
         index = self.list.currentRow()

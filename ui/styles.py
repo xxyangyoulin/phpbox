@@ -1,8 +1,12 @@
 """主题管理模块 - Fluent Design"""
 import os
-from PyQt6.QtWidgets import QApplication, QDialog
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
-from qfluentwidgets import InfoBar, setTheme, Theme
+from PyQt6.QtWidgets import QApplication, QDialog, QLabel
+from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QFontDatabase
+from qfluentwidgets import (
+    CustomStyleSheet, InfoBar, SimpleCardWidget, TextEdit, Theme, setCustomStyleSheet,
+    setFont, setTheme, setThemeColor,
+)
 from core.logger import logger
 
 
@@ -36,6 +40,54 @@ def themed_color(light: str, dark: str) -> str:
     """根据当前主题返回对应颜色"""
     from qfluentwidgets import isDarkTheme
     return dark if isDarkTheme() else light
+
+
+class SurfaceCard(SimpleCardWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setBorderRadius(12)
+
+
+class LogTextEdit(TextEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        font.setFamilies(["Cascadia Mono", "JetBrains Mono", "DejaVu Sans Mono", "Noto Sans CJK SC"])
+        font.setPixelSize(13)
+        self.setFont(font)
+        base = "border-radius: 8px; padding: 8px;"
+        active = "TextEdit:hover, TextEdit:focus { background: #1e1e1e; color: #d4d4d4; }"
+        setCustomStyleSheet(
+            self,
+            f"TextEdit {{ background: #1e1e1e; color: #d4d4d4; border: 1px solid #d1d1d1; {base} }}" + active,
+            f"TextEdit {{ background: #1e1e1e; color: #d4d4d4; border: 1px solid #3c3c3c; {base} }}" + active,
+        )
+
+
+class StatusBadge(QLabel):
+    COLORS = {
+        "accent": ("#e5f1fb", "#005fb8", "#153c5b", "#60cdff"),
+        "success": ("#dff6dd", "#0f7b0f", "#223c22", "#6ccb5f"),
+        "warning": ("#fff4ce", "#9d5d00", "#433519", "#fce100"),
+        "neutral": ("#f0f0f0", "#606060", "#333333", "#cecece"),
+    }
+
+    def __init__(self, text="", parent=None, tone="neutral"):
+        super().__init__(parent=parent)
+        self.setText(text)
+        setFont(self, 12)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        CustomStyleSheet(self).apply(self)
+        self.setTone(tone)
+
+    def setTone(self, tone):
+        light_bg, light_fg, dark_bg, dark_fg = self.COLORS[tone]
+        base = "border-radius: 5px; padding: 4px 9px; font-weight: 600;"
+        setCustomStyleSheet(
+            self,
+            f"QLabel {{ background: {light_bg}; color: {light_fg}; {base} }}",
+            f"QLabel {{ background: {dark_bg}; color: {dark_fg}; {base} }}",
+        )
 
 
 def detect_system_theme() -> str:
@@ -76,6 +128,7 @@ def apply_theme(app: QApplication, theme: str = "light"):
         app: QApplication 实例
         theme: 主题名称 ("light" 或 "dark")
     """
+    setThemeColor("#0078d4")
     if theme == "dark":
         setTheme(Theme.DARK)
     else:
@@ -124,7 +177,10 @@ class FluentDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._apply_theme_background()
+        CustomStyleSheet(self).setCustomStyleSheet(
+            "QDialog { background-color: #f3f3f3; }",
+            "QDialog { background-color: #202020; }",
+        ).apply(self)
 
     def reject(self):
         from PyQt6.QtCore import QTimer
@@ -148,11 +204,3 @@ class FluentDialog(QDialog):
     def closeEvent(self, event):
         self.reject()
         event.ignore()
-
-    def _apply_theme_background(self):
-        """根据当前主题设置背景色"""
-        from qfluentwidgets import isDarkTheme
-        if isDarkTheme():
-            self.setStyleSheet("QDialog { background-color: #1e1e1e; }")
-        else:
-            self.setStyleSheet("QDialog { background-color: #ffffff; }")

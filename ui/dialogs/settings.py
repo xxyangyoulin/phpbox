@@ -5,7 +5,7 @@ from PyQt6.QtCore import Qt
 from qfluentwidgets import (
     SubtitleLabel, BodyLabel, CaptionLabel, LineEdit,
     PushButton, PrimaryPushButton, CheckBox, ComboBox,
-    CardWidget, StrongBodyLabel, FluentIcon as FIF,
+    StrongBodyLabel, FluentIcon as FIF,
     InfoBar, InfoBarPosition, MessageBox
 )
 
@@ -13,7 +13,7 @@ from ui.worker import OperationWorker
 from core.settings import Settings
 from core.proxy import detect_system_proxy, sync_all_projects_proxy, validate_proxy_url
 from ui.dialogs.environment_diagnostics import EnvironmentDiagnosticsDialog
-from ui.styles import FluentDialog, apply_theme
+from ui.styles import SurfaceCard, FluentDialog, apply_theme
 
 
 class SettingsDialog(FluentDialog):
@@ -32,7 +32,7 @@ class SettingsDialog(FluentDialog):
         layout.setSpacing(16)
 
         # 代理设置卡片
-        proxy_card = CardWidget(self)
+        proxy_card = SurfaceCard(self)
         proxy_layout = QVBoxLayout(proxy_card)
         proxy_layout.setSpacing(12)
 
@@ -75,7 +75,7 @@ class SettingsDialog(FluentDialog):
         layout.addWidget(proxy_card)
 
         # 主题设置卡片
-        theme_card = CardWidget(self)
+        theme_card = SurfaceCard(self)
         theme_layout = QVBoxLayout(theme_card)
         theme_layout.setSpacing(12)
 
@@ -93,7 +93,7 @@ class SettingsDialog(FluentDialog):
         layout.addWidget(theme_card)
 
         # 环境诊断卡片
-        diagnostics_card = CardWidget(self)
+        diagnostics_card = SurfaceCard(self)
         diagnostics_layout = QVBoxLayout(diagnostics_card)
         diagnostics_layout.setSpacing(12)
 

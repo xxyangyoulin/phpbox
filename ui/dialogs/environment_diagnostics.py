@@ -3,17 +3,18 @@ import shutil
 from typing import List, Tuple
 
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout, QWidget
+from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt
 
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, CardWidget, PrimaryPushButton,
+    BodyLabel, CaptionLabel, PrimaryPushButton,
     PushButton, ScrollArea, StrongBodyLabel, FluentIcon as FIF, InfoBar
 )
 
 from core.docker import collect_environment_diagnostics
 from core.proxy import detect_system_proxy
 from core.settings import Settings
-from ui.styles import FluentDialog, themed_color
+from ui.styles import SurfaceCard, FluentDialog, themed_color
 
 
 class DiagnosticRow(QWidget):
@@ -30,7 +31,7 @@ class DiagnosticRow(QWidget):
         title = StrongBodyLabel(label)
         detail = CaptionLabel(value)
         detail.setWordWrap(True)
-        detail.setStyleSheet(f"color: {themed_color('#64748b', '#94a3b8')};")
+        detail.setTextColor(QColor("#606060"), QColor("#cecece"))
         left.addWidget(title)
         left.addWidget(detail)
         layout.addLayout(left, 1)
@@ -60,7 +61,7 @@ class EnvironmentDiagnosticsDialog(FluentDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
 
-        summary_card = CardWidget(self)
+        summary_card = SurfaceCard(self)
         summary_layout = QHBoxLayout(summary_card)
         summary_layout.setContentsMargins(18, 16, 18, 16)
         summary_layout.setSpacing(20)
@@ -69,7 +70,7 @@ class EnvironmentDiagnosticsDialog(FluentDialog):
         text_wrap.setSpacing(4)
         text_wrap.addWidget(StrongBodyLabel("系统环境诊断"))
         hint = CaptionLabel("用于排查 Docker、Compose、终端、系统打开器、代理和日志目录问题。")
-        hint.setStyleSheet(f"color: {themed_color('#64748b', '#94a3b8')};")
+        hint.setTextColor(QColor("#606060"), QColor("#cecece"))
         text_wrap.addWidget(hint)
         summary_layout.addLayout(text_wrap, 1)
 
@@ -106,7 +107,7 @@ class EnvironmentDiagnosticsDialog(FluentDialog):
         layout.addLayout(btn_layout)
 
     def _add_group(self, title: str, rows: List[Tuple[str, str, bool]]):
-        card = CardWidget(self)
+        card = SurfaceCard(self)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(18, 16, 18, 16)
         card_layout.setSpacing(4)

@@ -4,6 +4,7 @@ from contextlib import ExitStack
 import uuid
 from typing import List, Optional
 
+from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QHBoxLayout, QHeaderView, QTableWidget, QTableWidgetItem,
@@ -11,9 +12,9 @@ from PyQt6.QtWidgets import (
 )
 
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, CardWidget, CheckBox, ComboBox, FluentIcon as FIF,
+    BodyLabel, CaptionLabel, CheckBox, ComboBox, FluentIcon as FIF,
     IconWidget, InfoBar, LineEdit, MessageBox, PrimaryPushButton, PushButton,
-    StrongBodyLabel, TextEdit, ToolButton
+    StrongBodyLabel, TextEdit, ToolButton, TableWidget, TitleLabel
 )
 
 from core.process import run_process
@@ -22,7 +23,7 @@ from core.docker import DockerManager
 from core.project import Project
 from core.tasks import PRESET_SCHEDULES, TaskDefinition, TaskManager, now_iso
 from ui.dialogs.build_progress import BuildProgressDialog
-from ui.styles import FluentDialog, themed_color
+from ui.styles import LogTextEdit, FluentDialog, SurfaceCard
 
 
 class TaskRuntimeWorker(QThread):
@@ -225,7 +226,7 @@ class TaskEditorDialog(FluentDialog):
         layout.addWidget(self.enabled_cb)
 
         self.hint_label = CaptionLabel("预设周期会自动生成对应的 cron 表达式；选择“自定义”后可直接输入表达式。")
-        self.hint_label.setStyleSheet(f"color: {themed_color('#64748b', '#94a3b8')};")
+        self.hint_label.setTextColor(QColor("#606060"), QColor("#cecece"))
         self.hint_label.setWordWrap(True)
         layout.addWidget(self.hint_label)
 
@@ -292,18 +293,9 @@ class TaskLogDialog(FluentDialog):
         self.setMinimumSize(880, 560)
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
-        self.log_text = TextEdit()
+        self.log_text = LogTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setPlainText(content or "暂无日志")
-        self.log_text.setStyleSheet(f"""
-            TextEdit {{
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-                font-family: 'Consolas', 'Monaco', monospace;
-                border: 1px solid {themed_color('#ddd', '#3c3c3c')};
-                border-radius: 4px;
-            }}
-        """)
         layout.addWidget(self.log_text, 1)
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
@@ -318,6 +310,7 @@ class TaskCenterPage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("task_center")
         self.projects: List[Project] = []
         self.task_manager = TaskManager(self.projects)
         self.runtime_worker: Optional[TaskRuntimeWorker] = None
@@ -328,10 +321,11 @@ class TaskCenterPage(QWidget):
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
 
-        header_card = CardWidget()
+        layout.addWidget(TitleLabel("定时任务"))
+        header_card = SurfaceCard()
         header_layout = QHBoxLayout(header_card)
         header_layout.setContentsMargins(22, 18, 22, 18)
         header_layout.setSpacing(12)
@@ -340,10 +334,10 @@ class TaskCenterPage(QWidget):
         header_layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
 
         header_text = QVBoxLayout()
-        title = StrongBodyLabel("定时任务")
+        title = StrongBodyLabel("项目任务")
         subtitle = CaptionLabel("集中管理所有项目的 crontab 任务，支持启停、立即执行、日志和最近执行状态。")
         subtitle.setWordWrap(True)
-        subtitle.setStyleSheet(f"color: {themed_color('#64748b', '#94a3b8')};")
+        subtitle.setTextColor(QColor("#606060"), QColor("#cecece"))
         header_text.addWidget(title)
         header_text.addWidget(subtitle)
         header_layout.addLayout(header_text, 1)
@@ -357,17 +351,21 @@ class TaskCenterPage(QWidget):
         layout.addWidget(header_card)
 
         self.summary_label = CaptionLabel("")
-        self.summary_label.setStyleSheet(f"color: {themed_color('#64748b', '#94a3b8')};")
+        self.summary_label.setTextColor(QColor("#606060"), QColor("#cecece"))
         layout.addWidget(self.summary_label)
 
-        self.table = QTableWidget(0, 8, self)
+        self.table = TableWidget(self)
+        self.table.setColumnCount(8)
+        self.table.verticalHeader().setDefaultSectionSize(52)
+        self.table.setBorderVisible(True)
+        self.table.setBorderRadius(12)
         self.table.setHorizontalHeaderLabels([
             "任务名称", "所属项目", "执行周期", "执行用户", "状态", "上次执行时间", "最近结果", "操作"
         ])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)
         self.table.setShowGrid(False)
         self.table.setWordWrap(False)
         header = self.table.horizontalHeader()

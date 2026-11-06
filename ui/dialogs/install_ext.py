@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from pathlib import Path
 
 from qfluentwidgets import (
-    PushButton, PrimaryPushButton, PillPushButton, LineEdit, TextEdit,
+    PushButton, PrimaryPushButton, PillPushButton, LineEdit,
     BodyLabel, CaptionLabel, CheckBox, IndeterminateProgressRing,
     CardWidget, StrongBodyLabel, FluentIcon as FIF,
     InfoBar, InfoBarPosition, MessageBox
@@ -20,7 +20,7 @@ from ui.worker import register_worker
 from core.docker import DockerManager
 from core.settings import Settings
 from core.proxy import convert_proxy_for_docker
-from ui.styles import FluentDialog, themed_color
+from ui.styles import LogTextEdit, FluentDialog
 
 
 class InstallExtWorker(QThread):
@@ -173,19 +173,9 @@ class InstallExtDialog(FluentDialog):
         log_label = BodyLabel("安装日志:")
         layout.addWidget(log_label)
 
-        self.log_text = TextEdit()
+        self.log_text = LogTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.document().setMaximumBlockCount(2000)
-        self.log_text.setStyleSheet(f"""
-            TextEdit {{
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-                font-family: 'Consolas', 'Monaco', monospace;
-                font-size: 12px;
-                border: 1px solid {themed_color('#ddd', '#3c3c3c')};
-                border-radius: 4px;
-            }}
-        """)
         layout.addWidget(self.log_text, 1)
 
         # 进度环

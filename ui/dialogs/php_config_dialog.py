@@ -3,18 +3,19 @@ import re
 from pathlib import Path
 from typing import Tuple
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QGridLayout
+from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, LineEdit, SpinBox,
-    BodyLabel, CaptionLabel, ComboBox, EditableComboBox, CardWidget,
+    BodyLabel, CaptionLabel, ComboBox, EditableComboBox,
     StrongBodyLabel, FluentIcon as FIF, InfoBar, InfoBarPosition, MessageBox
 )
 
 from ui.worker import OperationWorker
 from core.docker import DockerManager, DockerResult
 from core.environment import EnvironmentManager, read_binding
-from ui.styles import FluentDialog
+from ui.styles import SurfaceCard, FluentDialog
 
 
 # 常用时区列表
@@ -97,7 +98,7 @@ class PhpConfigDialog(FluentDialog):
             layout.addWidget(scope)
 
         # 配置卡片
-        config_card = CardWidget(self)
+        config_card = SurfaceCard(self)
         config_layout = QVBoxLayout(config_card)
         config_layout.setSpacing(12)
         config_layout.setContentsMargins(20, 16, 20, 16)
@@ -201,7 +202,7 @@ class PhpConfigDialog(FluentDialog):
             "提示：修改配置后会自动重启 PHP 服务使配置生效。\n"
             "POST 大小应大于或等于上传文件大小。"
         )
-        hint.setStyleSheet("color: #64748b;")
+        hint.setTextColor(QColor("#606060"), QColor("#cecece"))
         layout.addWidget(hint)
 
         layout.addStretch()

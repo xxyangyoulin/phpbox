@@ -10,11 +10,11 @@ from core.process import run_process
 from ui.worker import register_worker
 
 from qfluentwidgets import (
-    PushButton, ComboBox, SearchLineEdit, TextEdit,
+    PushButton, ComboBox, SearchLineEdit,
     BodyLabel, ToolButton, FluentIcon as FIF
 )
 from core.docker import DockerManager
-from ui.styles import FluentDialog, themed_color
+from ui.styles import LogTextEdit, FluentDialog
 
 
 class LogReaderThread(QThread):
@@ -101,18 +101,8 @@ class LogViewerDialog(FluentDialog):
         layout.addLayout(toolbar)
 
         # 日志文本框
-        self.log_text = TextEdit()
+        self.log_text = LogTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setStyleSheet(f"""
-            TextEdit {{
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-                font-family: 'Consolas', 'Monaco', monospace;
-                font-size: 12px;
-                border: 1px solid {themed_color('#ddd', '#3c3c3c')};
-                border-radius: 4px;
-            }}
-        """)
         layout.addWidget(self.log_text)
 
         # 关闭按钮

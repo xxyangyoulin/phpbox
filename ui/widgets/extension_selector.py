@@ -2,13 +2,15 @@
 from typing import List
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 
 from qfluentwidgets import (
     PushButton, BodyLabel, CaptionLabel, CheckBox,
-    CardWidget, StrongBodyLabel, ScrollArea, SearchLineEdit,
+    StrongBodyLabel, ScrollArea, SearchLineEdit,
     TransparentToolButton, FluentIcon as FIF, isDarkTheme
 )
 from core.config import EXTENSIONS
+from ui.styles import SurfaceCard
 
 
 # 快捷预设定义：名称 -> 扩展 ID 列表
@@ -39,7 +41,7 @@ class CollapsibleCategory(QWidget):
         self._outer.setContentsMargins(0, 0, 0, 0)
         self._outer.setSpacing(0)
 
-        self._card = CardWidget(self)
+        self._card = SurfaceCard(self)
         card_layout = QVBoxLayout(self._card)
         card_layout.setSpacing(0)
         card_layout.setContentsMargins(16, 8, 16, 12)
@@ -57,7 +59,7 @@ class CollapsibleCategory(QWidget):
         self._toggle_btn.clicked.connect(self.toggle)
 
         self._count_label = CaptionLabel("0/0")
-        self._count_label.setStyleSheet("color: #64748b;")
+        self._count_label.setTextColor(QColor("#606060"), QColor("#cecece"))
 
         header_layout.addWidget(self._title_label)
         header_layout.addWidget(self._count_label)
@@ -114,7 +116,7 @@ class ExtensionSelector(QWidget):
         layout.setSpacing(8)
 
         # ── 快捷预设行 ──────────────────────────────────────────
-        preset_card = CardWidget()
+        preset_card = SurfaceCard()
         preset_inner = QVBoxLayout(preset_card)
         preset_inner.setContentsMargins(16, 10, 16, 10)
         preset_inner.setSpacing(8)
