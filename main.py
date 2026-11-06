@@ -51,6 +51,7 @@ def main():
 
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtCore import Qt, QSettings, qInstallMessageHandler
+    from PyQt6.QtGui import QIcon
     from ui.main_window import MainWindow
     from ui.styles import apply_theme, ThemeWatcher
     from ui.single_instance import SingleInstance
@@ -66,6 +67,7 @@ def main():
     app.setApplicationName("PHP 开发环境管理器")
     app.setApplicationVersion(VERSION)
     app.setOrganizationName("phpbox")
+    app.setWindowIcon(QIcon(str(project_root / "resources" / "icons" / "phpbox-256.png")))
     app.setQuitOnLastWindowClosed(False)  # 关闭窗口不退出，托盘运行
 
     request = "hide" if args.hide else ("new-project" if args.new_project else "show")

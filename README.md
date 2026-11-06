@@ -8,7 +8,7 @@
 ![Python](https://img.shields.io/badge/python-3.8+-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-![Screenshot](screenshot.png)
+![PHPBox 当前界面：浅色与深色主题斜线对比（示例项目）](screenshot.png)
 
 ## 特性
 

@@ -221,7 +221,7 @@ class OverviewMetricCard(SurfaceCard):
 class ProjectHeaderCard(SurfaceCard):
     def __init__(self, parent=None):
         super().__init__(parent)
-        icon_path = Path(__file__).parent.parent / "resources" / "icons" / "phpbox-256.png"
+        icon_path = Path(__file__).parent.parent / "resources" / "icons" / "phpbox-mark.png"
         scene = QGraphicsScene()
         item = scene.addPixmap(QPixmap(str(icon_path)))
         blur = QGraphicsBlurEffect()
