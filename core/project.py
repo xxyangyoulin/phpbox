@@ -130,6 +130,8 @@ class ProjectManager:
 
     def _load_project(self, path: Path, with_status=True) -> Optional[Project]:
         """加载单个项目信息"""
+        if (path / '.phpbox/deleted').exists():
+            return None
         compose_file = path / "docker-compose.yml"
         if not compose_file.exists():
             return None
@@ -329,7 +331,7 @@ class ProjectManager:
             print(f"设置自启动失败: {e}")
             return False
 
-    def delete_project(self, project: Project) -> bool:
+    def delete_project(self, project: Project, delete_directory: bool = True) -> bool:
         from core.environment import operation_lock, read_binding, EnvironmentManager, write_binding
         from contextlib import ExitStack
         try:
@@ -345,7 +347,7 @@ class ProjectManager:
                     manager.assert_project_idle(project.path)
                     write_binding(project.path, dict(binding, enabled=False))
                     manager.sync_cron(environment)
-                success = self._delete_project(project)
+                success = self._delete_project(project, delete_directory)
                 if binding and not success:
                     write_binding(project.path, binding)
                     manager.sync_cron(environment)
@@ -354,7 +356,7 @@ class ProjectManager:
             print(f'删除项目失败: {exc}')
             return False
 
-    def _delete_project(self, project: Project) -> bool:
+    def _delete_project(self, project: Project, delete_directory: bool = True) -> bool:
         """删除项目"""
         try:
             docker = DockerManager(project.path)
@@ -362,8 +364,12 @@ class ProjectManager:
             if not result.success:
                 print(f"停止容器失败，保留项目目录: {result.error}")
                 return False
-            # 删除目录
-            shutil.rmtree(project.path)
+            if delete_directory:
+                shutil.rmtree(project.path)
+            else:
+                marker = project.path / '.phpbox/deleted'
+                marker.parent.mkdir(exist_ok=True)
+                marker.touch()
             return True
         except Exception as e:
             print(f"删除项目失败: {e}")
@@ -542,6 +548,8 @@ def get_port_usage(
         for item in sorted(BASE_DIR.iterdir()):
             if item.is_dir():
                 # 排除当前项目
+                if (item / '.phpbox/deleted').exists():
+                    continue
                 if exclude_project_name and item.name == exclude_project_name:
                     continue
                 project_port = None

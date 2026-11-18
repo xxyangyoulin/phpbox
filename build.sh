@@ -123,7 +123,7 @@ build_deb() {
     fi
 
     DEB_DIR="deb_package"
-    VERSION="2.1.1"
+    VERSION="2.1.2"
     ARCH="amd64"
 
     rm -rf "$DEB_DIR"
@@ -155,10 +155,12 @@ EOF
     chmod 755 "$DEB_DIR/usr/bin/phpbox"
     ln -s phpbox "$DEB_DIR/usr/bin/pbox"
     cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
+    mkdir -p "$DEB_DIR/usr/share/icons/hicolor/256x256/apps"
+    cp resources/icons/phpbox-256.png "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/phpbox.png"
     sh resources/install-cli.sh "$DEB_DIR/usr"
 
     # 构建
-    dpkg-deb --build "$DEB_DIR" "dist/phpbox_${VERSION}_${ARCH}.deb"
+    dpkg-deb --root-owner-group -Zgzip --build "$DEB_DIR" "dist/phpbox_${VERSION}_${ARCH}.deb"
 
     rm -rf "$DEB_DIR"
     echo ">>> .deb 构建完成: dist/phpbox_${VERSION}_${ARCH}.deb"
@@ -192,6 +194,10 @@ if [ "$BUILD_APPIMAGE" = true ] || [ "$BUILD_DEB" = true ]; then
 fi
 
 # 执行构建
+if [ "$BUILD_DEB" = true ] && ! command -v dpkg-deb >/dev/null 2>&1; then
+    echo "错误: 构建 deb 需要 dpkg-deb，请安装 dpkg/dpkg-dev 后重试"
+    exit 1
+fi
 check_venv
 
 [ "$BUILD_BIN" = true ] && build_bin

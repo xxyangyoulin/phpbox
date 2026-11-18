@@ -407,6 +407,9 @@ class DockerManager:
         if no_cache:
             args.append("--no-cache")
 
+        if proxy:
+            args += ['--build-arg', 'HTTP_PROXY', '--build-arg', 'HTTPS_PROXY']
+
         from core.environment import operation_lock
         with operation_lock(self.project_path):
             if (self.project_path / '.phpbox/switch.json').exists():

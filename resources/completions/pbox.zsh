@@ -1,4 +1,4 @@
-#compdef pbox phpbox
+#compdef pbox phpbox pbox-proxy
 _pbox() {
     local context state state_descr line
     typeset -A opt_args
@@ -13,6 +13,7 @@ _pbox() {
         '(-T --no-tty -t --tty)'{-T,--no-tty}'[禁用终端]' \
         '(-T --no-tty -t --tty)'{-t,--tty}'[强制终端]' \
         '--verbose[显示完整错误]' \
+        '--with-proxy[本次任务使用项目或软件代理]' \
         '1:命令:->commands' '*::参数:->args'
     case $state in
         projects)
@@ -44,4 +45,4 @@ _pbox() {
             esac ;;
     esac
 }
-compdef _pbox pbox phpbox
+compdef _pbox pbox phpbox pbox-proxy

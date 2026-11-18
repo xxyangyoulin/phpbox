@@ -1,4 +1,4 @@
-for cmd in pbox phpbox
+for cmd in pbox phpbox pbox-proxy
     complete -c $cmd -s h -l help -d '显示帮助'
     complete -c $cmd -l version -d '显示版本'
     complete -c $cmd -s p -l project -r -f -a '(pbox list -q 2>/dev/null)' -d '选择项目'
@@ -7,6 +7,7 @@ for cmd in pbox phpbox
     complete -c $cmd -s T -l no-tty -d '禁用终端'
     complete -c $cmd -s t -l tty -d '强制终端'
     complete -c $cmd -l verbose -d '显示完整错误'
+    complete -c $cmd -l with-proxy -d '本次任务使用项目或软件代理'
     complete -c $cmd -n 'not __fish_seen_subcommand_from list ps status start up stop restart recreate down build rebuild logs shell exec php composer artisan think env use recover doctor completion help gui' -f -a 'list ps status start up stop restart recreate down build rebuild logs shell exec php composer artisan think env use recover doctor completion help gui'
     complete -c $cmd -n '__fish_seen_subcommand_from start up stop restart recreate down build rebuild logs status ps recover' -f -a '(pbox list -q 2>/dev/null)'
     complete -c $cmd -n '__fish_seen_subcommand_from env; and not __fish_seen_subcommand_from list inspect create start stop restart rebuild delete' -f -a 'list inspect create start stop restart rebuild delete'

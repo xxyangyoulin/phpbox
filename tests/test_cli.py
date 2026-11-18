@@ -88,6 +88,89 @@ class CliTests(unittest.TestCase):
              patch('core.process.run_attached', return_value=0):
             self.assertEqual(cli.dispatch(cli.parse_args(['-p', 'demo', 'php', '-v'])), 0)
 
+    def test_proxy_uses_project_before_software_and_preserves_arguments(self):
+        import yaml
+        compose = yaml.safe_load((self.path / 'docker-compose.yml').read_text())
+        compose['services']['php']['build'] = {'args': {'HTTP_PROXY': 'http://user:p$$word@127.0.0.1:7890'}}
+        (self.path / 'docker-compose.yml').write_text(yaml.safe_dump(compose))
+        before = os.environ.copy()
+        with patch('core.settings.Settings.get_proxy', side_effect=AssertionError('unexpected fallback')), \
+             patch('core.proxy.get_host_ip_for_docker', return_value='172.17.0.1'), \
+             patch('core.process.run_attached', return_value=17) as run:
+            code = cli.dispatch(cli.parse_args(['--with-proxy', '-C', str(self.code / 'sub'),
+                                                'composer', '--', 'install', '', 'a;b', '$HOME']))
+        self.assertEqual(code, 17)
+        command = run.call_args.args[0]
+        self.assertEqual(command[-5:], ['composer', 'install', '', 'a;b', '$HOME'])
+        self.assertIn('/var/www/html/sub', command)
+        self.assertIn('http_proxy', command)
+        self.assertNotIn('p$word', ' '.join(command))
+        for key in ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY'):
+            self.assertEqual(run.call_args.kwargs['env'][key], 'http://user:p$word@172.17.0.1:7890')
+        self.assertEqual(dict(os.environ), before)
+
+    def test_proxy_falls_back_to_software_and_no_proxy_matches_plain_pbox(self):
+        for configured in ('http://172.17.0.1:7890', None):
+            with self.subTest(configured=configured), \
+                 patch('core.settings.Settings.get_proxy', return_value=configured), \
+                 patch('core.process.run_attached', return_value=0) as run:
+                cli.dispatch(cli.parse_args(['-p', 'demo', 'exec', '--with-proxy', '-T',
+                                            '-u', 'root', '-w', '/tmp', 'php', '--', 'curl', '--help']))
+                proxy_call = run.call_args
+                if configured:
+                    self.assertEqual(proxy_call.kwargs['env']['http_proxy'], configured)
+                    self.assertIn('root', proxy_call.args[0])
+                    self.assertEqual(proxy_call.args[0][-2:], ['curl', '--help'])
+                else:
+                    cli.dispatch(cli.parse_args(['-p', 'demo', 'exec', '-T', '-u', 'root', '-w', '/tmp', 'php', '--', 'curl', '--help']))
+                    self.assertEqual(run.call_args, proxy_call)
+
+    def test_shared_proxy_uses_bound_environment_or_software(self):
+        env = PhpEnvironment('a' * 32, 'php84', '8.4', [], 'http://172.17.0.1:7890')
+        with patch('core.environment.read_binding', return_value={'environment_id': env.id}), \
+             patch('core.runtime.read_binding', return_value={'environment_id': env.id}), \
+             patch.object(EnvironmentManager, 'load', return_value=env), \
+             patch('core.settings.Settings.get_proxy', return_value='http://172.17.0.1:7891') as settings, \
+             patch('core.process.run_attached', return_value=0) as run:
+            for proxy, expected in ((env.proxy, env.proxy), ('', 'http://172.17.0.1:7891')):
+                env.proxy = proxy
+                cli.dispatch(cli.parse_args(['--with-proxy', '-p', 'demo', 'shell']))
+                command = run.call_args.args[0]
+                self.assertEqual(command[:2], ['docker', 'exec'])
+                self.assertLess(command.index('http_proxy'), command.index(env.container))
+                self.assertEqual(run.call_args.kwargs['env']['http_proxy'], expected)
+            settings.assert_called_once()
+
+    def test_runtime_proxy_precedes_build_proxy(self):
+        from core.proxy import get_project_proxy
+        import yaml
+        for variables in ({'http_proxy': 'http://proxy.local:7890'}, ['http_proxy=http://proxy.local:7890']):
+            (self.path / 'docker-compose.yml').write_text(yaml.safe_dump({'services': {'php': {
+                'environment': variables, 'build': {'args': ['HTTP_PROXY=http://build.local:7891']},
+            }}}))
+            self.assertEqual(get_project_proxy(self.path), 'http://proxy.local:7890')
+
+    def test_bad_or_unreachable_loopback_proxy_does_not_execute(self):
+        for proxy in ('file:///tmp/proxy', 'http://127.0.0.1:7890'):
+            with self.subTest(proxy=proxy), patch('core.settings.Settings.get_proxy', return_value=proxy), \
+                 patch('core.proxy.get_host_ip_for_docker', return_value=None), \
+                 patch('core.process.run_attached') as run:
+                code, _, error = self.invoke(['--with-proxy', '-p', 'demo', 'php', '-v'])
+                self.assertEqual(code, 1)
+                self.assertTrue(error)
+                run.assert_not_called()
+
+    def test_plain_pbox_never_loads_proxy_and_build_uses_proxy_arguments(self):
+        with patch('core.proxy.get_project_proxy', side_effect=AssertionError('unexpected proxy read')), \
+             patch('core.process.run_attached', return_value=0):
+            self.assertEqual(self.invoke(['-p', 'demo', 'php', '-v'])[0], 0)
+        with patch('core.settings.Settings.get_proxy', return_value='http://proxy.local:7890'), \
+             patch('core.docker.run_attached', return_value=0) as run:
+            self.assertEqual(self.invoke(['--with-proxy', '-p', 'demo', 'build', '--no-cache'])[0], 0)
+            self.assertEqual(run.call_args.kwargs['env']['HTTP_PROXY'], 'http://proxy.local:7890')
+            self.assertIn('--no-cache', run.call_args.args[0])
+            self.assertIn('--build-arg', run.call_args.args[0])
+
     def test_tty_redirect_and_explicit_overrides(self):
         for options, stdin, stdout, tty in (([], True, False, False), ([], False, True, False),
                                             ([], True, True, True), (['-T'], True, True, False),
@@ -276,6 +359,23 @@ class CliTests(unittest.TestCase):
 
 
 class CliEntrypointTests(unittest.TestCase):
+    def test_proxy_launcher_installation_preserves_arguments_and_exit_code(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = Path(tmp) / 'prefix with spaces'
+            binary_prefix = Path(tmp) / 'local'
+            subprocess.run(['sh', str(root / 'resources/install-cli.sh'), str(prefix), str(binary_prefix)], check=True)
+            pbox = binary_prefix / 'bin/pbox'
+            pbox.write_text('#!' + sys.executable + '\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(23)\n')
+            pbox.chmod(0o755)
+            argv = ['-p', 'demo', 'composer', 'install', '', 'a b', '$(false)']
+            result = subprocess.run([str(binary_prefix / 'bin/pbox-proxy')] + argv, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 23)
+            self.assertEqual(json.loads(result.stdout), ['--with-proxy'] + argv)
+            for item in ('share/man/man1/pbox-proxy.1', 'share/bash-completion/completions/pbox-proxy',
+                         'share/fish/vendor_completions.d/pbox-proxy.fish'):
+                self.assertTrue((prefix / item).is_file())
+
     def test_help_and_version_need_no_qt_or_docker(self):
         root = Path(__file__).resolve().parents[1]
         code = '''import runpy, sys

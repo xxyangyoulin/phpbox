@@ -46,6 +46,7 @@ from ui.dialogs.task_center import TaskCenterPage
 from ui.worker import OperationWorker, running_workers
 from ui.operations import OperationsPage
 from ui.styles import SurfaceCard, StatusBadge, themed_color
+from ui.updates import UpdateChecker
 
 
 _dir_size_cache: dict = {}  # {path: (timestamp, size)}
@@ -123,7 +124,7 @@ def make_project_icon(name: str, is_running: bool = True, is_partial: bool = Fal
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QBrush(QColor(color)))
+    painter.setBrush(QBrush(QColor("#737373" if not is_running and not is_partial else color)))
     painter.drawRoundedRect(4, 4, size-8, size-8, 18, 18)
 
     painter.setPen(QPen(QColor("white")))
@@ -135,6 +136,9 @@ def make_project_icon(name: str, is_running: bool = True, is_partial: bool = Fal
     painter.setPen(QPen(QColor("white"), 3))
     painter.setBrush(QColor("#f5a623" if is_partial else "#0f7b0f" if is_running else "#8a8a8a"))
     painter.drawEllipse(60, 60, 16, 16)
+    if not is_running and not is_partial:
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+        painter.fillRect(pixmap.rect(), QColor(138, 138, 138, 100))
     painter.end()
 
     return QIcon(pixmap)
@@ -1301,6 +1305,9 @@ class ProjectDashboardPage(QWidget):
     def _on_reload_current(self, projects: list):
         """刷新完成回调"""
         self.projects = projects
+        main_win = self.window()
+        main_win.projects = projects
+        main_win._sort_project_navigation()
         self.refresh_status()
 
     def view_service_logs(self, service):
@@ -1415,18 +1422,26 @@ class ProjectDashboardPage(QWidget):
     def delete_project(self):
         if not self.current_project:
             return
+        from qfluentwidgets import CheckBox
         w = MessageBox(
             "确认删除",
-            f"确定要删除项目 '{self.current_project.name}' 吗？\n\n这将永久删除项目源码、配置、所有容器和数据卷！",
+            f"确定要删除项目 '{self.current_project.name}' 吗？\n\n"
+            "将移除项目并删除其容器和 Docker 数据卷，共享 PHP 环境保留。\n"
+            "默认保留原位置的项目目录、源码和配置；勾选下方选项将永久删除它们。\n\n"
+            f"项目目录：{self.current_project.path}",
             self.window()
         )
+        delete_directory_cb = CheckBox("同时删除项目目录", w)
+        w.textLayout.addWidget(delete_directory_cb)
         if w.exec():
             if getattr(self, "_deleting", False):
                 return
             self._deleting = True
             target = self.current_project
             self._delete_target = target
-            self.operation_worker = OperationWorker(lambda: self.project_manager.delete_project(target))
+            delete_directory = delete_directory_cb.isChecked()
+            self.operation_worker = OperationWorker(
+                lambda: self.project_manager.delete_project(target, delete_directory=delete_directory))
             self.operation_worker.succeeded.connect(self._on_project_deleted)
             self.operation_worker.failed.connect(self._on_delete_failed)
             self.operation_worker.start()
@@ -1853,6 +1868,8 @@ class MainWindow(FluentWindow):
         self.docker_ready = docker_ready
         self.docker_error = docker_error
         self.restart_args = None
+        self.update_checker = UpdateChecker(self)
+        self.update_checker.available.connect(self._notify_update)
 
         # 确保折叠按钮显示在顶部，且隐藏多余的返回按钮
         self.navigationInterface.setMenuButtonVisible(True)
@@ -1978,6 +1995,19 @@ class MainWindow(FluentWindow):
                 is_partial = bool(project and project.health_status == "partial")
                 nav_item.set_running_state(is_running, is_partial)
 
+    def _sort_project_navigation(self):
+        self.projects.sort(key=lambda p: (p.health_status == 'stopped', p.name))
+        keys = [f'proj_{p.name}' for p in self.projects]
+        if keys == self._project_nav_keys:
+            return
+        layout = self.navigationInterface.panel.scrollLayout
+        for index, key in enumerate(keys):
+            item = self._project_nav_items.get(key)
+            if item is not None:
+                layout.removeWidget(item)
+                layout.insertWidget(index, item, 0, Qt.AlignmentFlag.AlignTop)
+        self._project_nav_keys = keys
+
     def load_projects(self, select_project: str = None):
         """异步加载项目列表
 
@@ -2008,6 +2038,7 @@ class MainWindow(FluentWindow):
 
     def _on_projects_loaded(self, projects: list, select_project: str = None):
         """项目列表加载完成回调"""
+        projects.sort(key=lambda p: (p.health_status == 'stopped', p.name))
         self.projects = projects
         self.dashboard_page.projects = self.projects
         self.task_center_page.set_projects(self.projects)
@@ -2087,6 +2118,7 @@ class MainWindow(FluentWindow):
             if p.name == project_name:
                 self.projects[i] = updated
                 break
+        self._sort_project_navigation()
 
         # 更新侧边栏项目的状态
         route_key = f"proj_{project_name}"
@@ -2152,7 +2184,19 @@ class MainWindow(FluentWindow):
         self._notify("创建成功", f"项目「{project_name}」已创建并启动", "success")
 
     def open_settings(self):
-        SettingsDialog(self).exec()
+        SettingsDialog(self, self.update_checker).exec()
+
+    def _notify_update(self, version, url):
+        settings = Settings().settings
+        if settings.value('updates/notified_version', '') == version:
+            return
+        message = f'发现新版本 {version}，请打开“设置 → 关于 PHPBox”查看发布页并更新。'
+        if QSystemTrayIcon.isSystemTrayAvailable() and QSystemTrayIcon.supportsMessages():
+            self.tray_icon.showMessage('PHPBox 有新版本', message, QSystemTrayIcon.MessageIcon.Information, 8000)
+            settings.setValue('updates/notified_version', version)
+        elif self.isVisible():
+            self._notify('PHPBox 有新版本', message, 'info')
+            settings.setValue('updates/notified_version', version)
 
     def _check_first_launch_proxy(self):
         """首次启动时提示配置代理"""

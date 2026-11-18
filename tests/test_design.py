@@ -43,14 +43,19 @@ class DesignTests(unittest.TestCase):
                 self.assertEqual(dashboard.verticalScrollBar().maximum(), 0)
                 self.assertFalse(dashboard.config_card.isVisible())
 
-    def test_projects_keep_distinct_colors_when_stopped(self):
+    def test_stopped_project_icons_have_gray_overlay(self):
         with patch.dict('ui.main_window._project_colors', {}, clear=True):
             colors = [get_project_color('api-' + str(index)) for index in range(12)]
             self.assertEqual(len(set(colors)), 12)
             self.assertEqual(get_project_color('api-0'), colors[0])
             running = make_project_icon('api-0', True).pixmap(80, 80).toImage()
             stopped = make_project_icon('api-0', False).pixmap(80, 80).toImage()
-            self.assertEqual(running.pixelColor(15, 25), stopped.pixelColor(15, 25))
+            partial = make_project_icon('api-0', False, True).pixmap(80, 80).toImage()
+            self.assertNotEqual(running.pixelColor(15, 25), stopped.pixelColor(15, 25))
+            self.assertLess(stopped.pixelColor(15, 25).saturation(), running.pixelColor(15, 25).saturation())
+            self.assertEqual(stopped.pixelColor(15, 25).saturation(), 0)
+            self.assertEqual(running.pixelColor(15, 25), partial.pixelColor(15, 25))
+            self.assertEqual(stopped.pixelColor(0, 0).alpha(), 0)
             self.assertNotEqual(running.pixelColor(68, 68), stopped.pixelColor(68, 68))
 
     def test_php_config_text_keeps_its_height_after_tab_switch_and_expansion(self):

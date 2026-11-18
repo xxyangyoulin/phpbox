@@ -83,6 +83,26 @@ class ProjectTests(unittest.TestCase):
             self.assertTrue(self.manager.delete_project(self.project))
         self.assertFalse(self.old.exists())
 
+    def test_delete_preserving_directory_removes_project_from_discovery(self):
+        original = (self.old / 'docker-compose.yml').read_bytes()
+        with patch('core.project.DockerManager') as factory:
+            factory.return_value._run_command.return_value = DockerResult(True)
+            self.assertTrue(self.manager.delete_project(self.project, delete_directory=False))
+            factory.return_value._run_command.assert_called_once_with(
+                ['down', '--volumes', '--remove-orphans'])
+        self.assertEqual((self.old / 'docker-compose.yml').read_bytes(), original)
+        self.assertEqual((self.old / 'old/index.php').read_text(), 'source')
+        self.assertEqual(self.manager.get_all_projects(with_status=False), [])
+        self.assertIsNone(self.manager.get_project('old', with_status=False))
+        self.assertTrue(self.manager.project_exists('old'))
+
+    def test_delete_preserving_directory_failure_keeps_project_registered(self):
+        with patch('core.project.DockerManager') as factory:
+            factory.return_value._run_command.return_value = DockerResult(False, error='down failed')
+            self.assertFalse(self.manager.delete_project(self.project, delete_directory=False))
+        self.assertFalse((self.old / '.phpbox/deleted').exists())
+        self.assertTrue((self.old / 'old/index.php').exists())
+
 
 class ProcessTests(unittest.TestCase):
     def test_cancel_silent_process(self):

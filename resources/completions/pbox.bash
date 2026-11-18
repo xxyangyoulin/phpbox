@@ -24,7 +24,7 @@ _pbox_complete() {
     done
     local words=''
     case "$cmd" in
-        '') words='list ps status start up stop restart recreate down build rebuild logs shell exec php composer artisan think env use recover doctor completion help gui --help --version -p --project -C --directory -q --quiet -T --no-tty -t --tty --verbose' ;;
+        '') words='list ps status start up stop restart recreate down build rebuild logs shell exec php composer artisan think env use recover doctor completion help gui --help --version -p --project -C --directory -q --quiet -T --no-tty -t --tty --verbose --with-proxy' ;;
         env)
             if [[ -z "$sub" ]]; then
                 words='list inspect create start stop restart rebuild delete'
@@ -40,4 +40,4 @@ _pbox_complete() {
     esac
     mapfile -t COMPREPLY < <(compgen -W "$words" -- "$cur")
 }
-complete -o default -F _pbox_complete pbox phpbox
+complete -o default -F _pbox_complete pbox phpbox pbox-proxy

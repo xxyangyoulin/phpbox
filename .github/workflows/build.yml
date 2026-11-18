@@ -137,8 +137,14 @@ jobs:
           chmod +x "$DEB_DIR/usr/bin/phpbox"
           ln -s phpbox "$DEB_DIR/usr/bin/pbox"
           cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
+          mkdir -p "$DEB_DIR/usr/share/icons/hicolor/256x256/apps"
+          cp resources/icons/phpbox-256.png "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/phpbox.png"
           sh resources/install-cli.sh "$DEB_DIR/usr"
-          dpkg-deb --build "$DEB_DIR" "dist/phpbox_${VERSION}_amd64.deb"
+          dpkg-deb --root-owner-group -Zgzip --build "$DEB_DIR" "dist/phpbox_${VERSION}_amd64.deb"
+          dpkg-deb --info "dist/phpbox_${VERSION}_amd64.deb"
+          dpkg-deb --contents "dist/phpbox_${VERSION}_amd64.deb" > /dev/null
+          dpkg-deb --extract "dist/phpbox_${VERSION}_amd64.deb" /tmp/phpbox-deb-check
+          cmp resources/icons/phpbox-256.png /tmp/phpbox-deb-check/usr/share/icons/hicolor/256x256/apps/phpbox.png
           rm -rf "$DEB_DIR"
           echo ".deb 大小: $(du -sh dist/phpbox_${VERSION}_amd64.deb | cut -f1)"
 

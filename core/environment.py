@@ -142,6 +142,7 @@ class EnvironmentManager:
 
     def bindings(self, environment_id):
         return [path for path in BASE_DIR.iterdir() if path.is_dir()
+                and not (path / '.phpbox/deleted').exists()
                 and (read_binding(path) or {}).get('environment_id') == environment_id] if BASE_DIR.exists() else []
 
     def compose(self, environment, args):

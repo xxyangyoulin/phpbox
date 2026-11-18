@@ -15,7 +15,7 @@ from core.environment import (EnvironmentManager, NETWORK, atomic_write, code_di
                               container_workdir, environment_locks, operation_lock, read_binding, write_binding)
 
 
-def exec_args(path, service, command, user=None, tty=False, workdir=None):
+def exec_args(path, service, command, user=None, tty=False, workdir=None, env_keys=()):
     from core.docker import DockerManager
     path = Path(path)
     binding = read_binding(path)
@@ -28,6 +28,8 @@ def exec_args(path, service, command, user=None, tty=False, workdir=None):
             args.append('-it')
         else:
             args.append('-i')
+        for key in env_keys:
+            args += ['-e', key]
         args += ['-u', user or f'{os.getuid()}:{os.getgid()}', '-w', workdir or container_workdir(path),
                  '-e', 'PROJECT_NAME=' + path.name, environment.container]
     else:
@@ -41,6 +43,8 @@ def exec_args(path, service, command, user=None, tty=False, workdir=None):
             args += ['-u', user]
         if workdir:
             args += ['-w', workdir]
+        for key in env_keys:
+            args += ['-e', key]
         args.append(service)
     return args + list(command)
 

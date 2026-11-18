@@ -30,6 +30,15 @@ ROOT_HELP = '''项目选择：
   php/composer/artisan/think 后的 --help 属于目标程序。
   pbox help php                     查看 PHPBox 对 php 命令的说明
 
+临时代理：
+  pbox-proxy composer install       用项目代理执行任务
+  pbox-proxy -p workbench exec php -- curl https://example.com
+  pbox --with-proxy php script.php  与 pbox-proxy 等价
+  优先使用项目 PHP 服务的代理配置（运行环境变量、构建参数）；共享项目使用绑定环境的代理。
+  未配置时回退到软件设置中已启用的代理；都没有则与 pbox 完全相同。
+  作用于 php/composer/artisan/think、exec/shell 和 build/rebuild。
+  仅本次命令及其子进程生效，不修改配置或容器全局代理；其他管理命令行为不变。
+
 生命周期与日志：
   pbox start workbench              启动项目（up 是别名）
   pbox restart                     重启现有容器，不应用新镜像/Compose 配置
@@ -72,6 +81,7 @@ def build_parser():
     common.add_argument('-C', '--directory', metavar='DIR', help='先进入宿主机目录再执行，作用类似 cd DIR')
     common.add_argument('-q', '--quiet', action='store_true', help='隐藏进度；list 仅输出项目名称，env list 仅输出环境 ID')
     common.add_argument('--verbose', action='store_true', help='操作失败时显示完整底层错误，非预期异常显示堆栈')
+    common.add_argument('--with-proxy', action='store_true', help='本次任务使用项目代理，未配置则回退软件代理；都没有时按普通 pbox 执行')
     selection = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
     selection.add_argument('-p', '--project', metavar='NAME', help='项目名称；仅用于项目操作，优先于当前目录识别')
     terminal = argparse.ArgumentParser(add_help=False, argument_default=argparse.SUPPRESS)
@@ -227,7 +237,7 @@ def _children(parser):
 def parse_args(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    for key, default in (('project', None), ('directory', None), ('quiet', False), ('verbose', False), ('tty', None)):
+    for key, default in (('project', None), ('directory', None), ('quiet', False), ('verbose', False), ('tty', None), ('with_proxy', False)):
         if not hasattr(args, key):
             setattr(args, key, default)
     if args.command == 'help':
@@ -460,8 +470,16 @@ def _run_container(args, project):
     else:
         command = [args.command] + args.args
     tty = args.tty if args.tty is not None else sys.stdin.isatty() and sys.stdout.isatty()
-    command = exec_args(project.path, service, command, user=getattr(args, 'user', None), tty=tty, workdir=workdir)
-    return run_attached(command, cwd=str(project.path), tty=tty)
+    proxy_env = {}
+    if args.with_proxy:
+        from core.proxy import get_project_proxy
+        proxy = get_project_proxy(project.path)
+        if proxy:
+            proxy_env = dict.fromkeys(('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY'), proxy)
+    command = exec_args(project.path, service, command, user=getattr(args, 'user', None), tty=tty,
+                        workdir=workdir, env_keys=proxy_env)
+    options = {'env': {**os.environ, **proxy_env}} if proxy_env else {}
+    return run_attached(command, cwd=str(project.path), tty=tty, **options)
 
 
 def _doctor(args):
@@ -564,7 +582,9 @@ def dispatch(args):
     docker = DockerManager(project.path, on_output=None if args.quiet else _progress)
     if args.command in ('build', 'rebuild'):
         from core.settings import Settings
-        return docker.build_live(proxy=Settings().get_proxy(), no_cache=args.no_cache)
+        from core.proxy import get_project_proxy
+        proxy = get_project_proxy(project.path) if args.with_proxy else Settings().get_proxy()
+        return docker.build_live(proxy=proxy, no_cache=args.no_cache)
     if args.command in ('start', 'up'):
         result = docker.up_with_port_check(project.name)
     else:

@@ -1,6 +1,6 @@
 .TH PBOX 1 "2026-11" "PHPBox" "User Commands"
 .SH NAME
-pbox, phpbox \- manage PHP Docker projects and shared PHP environments
+pbox, phpbox, pbox-proxy \- manage PHP Docker projects and shared PHP environments
 .SH SYNOPSIS
 .B pbox
 .RI [ options ] " command " [ arguments ]
@@ -35,6 +35,16 @@ Show full underlying operation errors.
 .TP
 .B --version
 Print the application version and exit.
+.TP
+.B --with-proxy
+Use the project proxy for this invocation. pbox-proxy is equivalent to pbox --with-proxy.
+Independent projects read PHP service environment variables, then build arguments from Compose.
+Shared projects use the bound PHP environment proxy. If absent, use the enabled application proxy;
+if neither is configured, behave like ordinary pbox.
+Applies to php/composer/artisan/think, exec/shell and build/rebuild. Other commands are unchanged.
+Proxy variables apply only to the command and its children, without changing project/container configuration.
+Loopback proxy hosts are converted to a host address reachable from Docker; conversion failure stops execution.
+Example: pbox-proxy -p workbench composer install.
 .SH COMMANDS
 .TP
 .B list

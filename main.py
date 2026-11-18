@@ -65,6 +65,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("PHP 开发环境管理器")
+    app.setDesktopFileName("phpbox")
     app.setApplicationVersion(VERSION)
     app.setOrganizationName("phpbox")
     app.setWindowIcon(QIcon(str(project_root / "resources" / "icons" / "phpbox-256.png")))
@@ -110,6 +111,7 @@ def main():
         docker_error = str(e) or "无法连接到 Docker 守护进程，请确认 Docker 已安装并正在运行。"
 
     window = MainWindow(docker_ready=docker_ready, docker_error=docker_error)
+    window.update_checker.start()
 
     def activate_existing(request):
         if request not in {"show", "new-project"}:

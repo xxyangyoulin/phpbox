@@ -1,15 +1,17 @@
 """设置对话框"""
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QApplication
+from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QApplication, QWidget
 from PyQt6.QtCore import Qt
 
 from qfluentwidgets import (
     SubtitleLabel, BodyLabel, CaptionLabel, LineEdit,
     PushButton, PrimaryPushButton, CheckBox, ComboBox,
-    StrongBodyLabel, FluentIcon as FIF,
+    StrongBodyLabel, ScrollArea, FluentIcon as FIF,
     InfoBar, InfoBarPosition, MessageBox
 )
 
 from ui.worker import OperationWorker
+from ui.dialogs.about import AboutCard
+from ui.updates import UpdateChecker
 from core.settings import Settings
 from core.proxy import detect_system_proxy, sync_all_projects_proxy, validate_proxy_url
 from ui.dialogs.environment_diagnostics import EnvironmentDiagnosticsDialog
@@ -19,17 +21,30 @@ from ui.styles import SurfaceCard, FluentDialog, apply_theme
 class SettingsDialog(FluentDialog):
     """设置对话框"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, update_checker=None):
         super().__init__(parent)
         self.settings = Settings()
+        self.update_checker = update_checker or UpdateChecker(self)
         self.setWindowTitle("设置")
         self.setMinimumSize(450, 350)
+        self.resize(560, 700)
         self.setup_ui()
         self.load_settings()
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setSpacing(16)
+        self.scroll = ScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("ScrollArea { background: transparent; border: none; }")
+        content = QWidget()
+        content.setObjectName('settingsContent')
+        content.setStyleSheet('#settingsContent { background: transparent; }')
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 12, 0)
         layout.setSpacing(16)
+        self.scroll.setWidget(content)
+        root.addWidget(self.scroll, 1)
 
         # 代理设置卡片
         proxy_card = SurfaceCard(self)
@@ -67,8 +82,8 @@ class SettingsDialog(FluentDialog):
 
         # 说明
         hint = CaptionLabel(
-            "提示: 代理用于 Docker 构建时下载 PHP 扩展，\n"
-            "仅在建项目和安装扩展时生效。"
+            "提示: 代理用于构建、安装扩展、检查更新，\n"
+            "也可作为 pbox-proxy 的默认代理。"
         )
         proxy_layout.addWidget(hint)
 
@@ -106,12 +121,9 @@ class SettingsDialog(FluentDialog):
 
         layout.addWidget(diagnostics_card)
 
+        self.about_card = AboutCard(self.update_checker, self)
+        layout.addWidget(self.about_card)
         layout.addStretch()
-
-        # GitHub 说明
-        github_label = CaptionLabel("如果你有任何建议和使用问题，欢迎到 GitHub 上提交 issue")
-        github_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(github_label)
 
         # 按钮
         btn_layout = QHBoxLayout()
@@ -130,7 +142,7 @@ class SettingsDialog(FluentDialog):
         self.save_btn.setDefault(True)
         btn_layout.addWidget(self.save_btn)
 
-        layout.addLayout(btn_layout)
+        root.addLayout(btn_layout)
 
         # 检测系统代理
         self.detect_system_proxy()

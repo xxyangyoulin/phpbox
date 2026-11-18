@@ -19,7 +19,10 @@
 - 内置 Xdebug 配置能力
 - 支持查看日志、进入容器、执行命令
 - 支持 Wayland 与 X11 环境
+- “关于”提供 GitHub 仓库、当前版本和手动检查更新；发现新正式版时发送系统通知
 - 提供面向日常开发的 CLI
+
+可从设置弹窗中的“关于 PHPBox”访问仓库及发布页。桌面应用启动 30 秒后在后台检查 GitHub 最新正式版，之后每 6 小时检查一次；同一版本只提醒一次，网络失败不自动弹窗。检查更新使用软件设置中已启用的代理，不使用容器代理地址；可在“关于”中手动重试。更新提示仅引导到发布页，由用户下载、安装。
 
 ## 环境要求
 
@@ -119,6 +122,19 @@ dist/phpbox/phpbox
 - 启动命令为 `phpbox`，也可以使用简写 `pbox`，例如 `pbox -h`、`pbox list`
 
 通过安装脚本或 `.deb` 包安装时，会自动创建 `pbox` 到 `phpbox` 的符号链接，无需配置 Shell 别名。
+
+同时安装 `pbox-proxy`，参数用法与 `pbox` 相同，等价于 `pbox --with-proxy`：
+
+```bash
+pbox-proxy composer install
+pbox-proxy -p workbench php script.php
+pbox-proxy exec php -- curl https://example.com
+pbox-proxy shell
+```
+
+代理优先级：独立项目读取 Compose 中 PHP 服务的运行代理、构建代理；共享项目读取当前绑定 PHP 环境的代理。项目未配置时，回退到软件设置中**已启用**的代理；都未配置时，与直接执行 `pbox` 相同。
+
+代理仅用于本次 `php/composer/artisan/think`、`exec/shell` 或 `build/rebuild` 及其子进程，不修改项目文件或容器全局配置，其他管理命令行为不变。宿主机回环地址会转换为容器可访问的地址；无法确定宿主机地址时会提示修正配置。`-p/-C/-T` 等选项位置、标准输入输出及退出码规则与 `pbox` 相同。重新执行安装脚本可安装新入口和补全；源码运行可用 `python main.py --with-proxy composer install`。
 
 ## GUI 功能
 

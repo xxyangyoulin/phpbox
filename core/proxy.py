@@ -81,6 +81,38 @@ def convert_proxy_for_docker(proxy_url: str) -> Optional[str]:
     return urlunsplit(parsed._replace(netloc=netloc))
 
 
+def get_project_proxy(project_path: Path) -> Optional[str]:
+    from core.environment import EnvironmentManager, read_binding
+    import yaml
+
+    binding = read_binding(project_path)
+    proxy = None
+    if binding:
+        proxy = EnvironmentManager().load(binding['environment_id']).proxy
+    else:
+        compose = yaml.safe_load((project_path / 'docker-compose.yml').read_text())
+        php = compose.get('services', {}).get('php') or {}
+        build = php.get('build')
+        build_args = build.get('args') if isinstance(build, dict) else None
+        for values in (php.get('environment'), build_args):
+            if isinstance(values, list):
+                values = dict(item.split('=', 1) for item in values if '=' in item)
+            for key in ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY'):
+                value = (values or {}).get(key)
+                if value:
+                    proxy = str(value).replace('$$', '$')
+                    break
+            if proxy:
+                break
+    if not proxy:
+        from core.settings import Settings
+        proxy = Settings().get_proxy()
+    proxy = convert_proxy_for_docker(proxy)
+    if proxy and validate_proxy_url(proxy).hostname in {'localhost', '127.0.0.1', '::1'}:
+        raise RuntimeError('无法确定宿主机代理地址，请在项目或软件设置中填写容器可访问的宿主机 IP')
+    return proxy
+
+
 SHELL_PROXY_BEGIN = "# >>> phpbox proxy helpers >>>"
 SHELL_PROXY_END = "# <<< phpbox proxy helpers <<<"
 DOCKERFILE_PROXY_BEGIN = "# BEGIN_PHPBOX_PROXY_HELPERS"
@@ -215,6 +247,8 @@ def sync_all_projects_proxy(proxy_url: Optional[str]) -> dict:
 
     from core.environment import read_binding
     for item in BASE_DIR.iterdir():
+        if (item / '.phpbox/deleted').exists():
+            continue
         if read_binding(item):
             continue
         if not item.is_dir():
