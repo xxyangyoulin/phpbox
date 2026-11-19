@@ -31,7 +31,9 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
           python main.py -h
-          bash -n build.sh install.sh docker-build.sh
+          for script in build.sh install.sh docker-build.sh resources/build-deb.sh; do
+            bash -n "$script"
+          done
       - name: GUI startup
         env:
           QT_QPA_PLATFORM: ${{ matrix.backend }}

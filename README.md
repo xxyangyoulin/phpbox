@@ -24,6 +24,8 @@
 
 可从设置弹窗中的“关于 PHPBox”访问仓库及发布页。桌面应用启动 30 秒后在后台检查 GitHub 最新正式版，之后每 6 小时检查一次；同一版本只提醒一次，网络失败不自动弹窗。检查更新使用软件设置中已启用的代理，不使用容器代理地址；可在“关于”中手动重试。更新提示仅引导到发布页，由用户下载、安装。
 
+删除项目默认只移除项目和容器，保留目录及 Docker 数据卷。“同时删除项目目录”和“同时删除 Docker 数据卷”可分别选择；删除目录也会清除目录内的绑定挂载数据。保留目录的项目可通过“项目操作 → 恢复已移除项目”重新加入列表，恢复不会自动启动容器或定时任务；已删除的数据不能恢复。
+
 ## 环境要求
 
 - Linux
@@ -338,6 +340,10 @@ pbox completion fish | source
 - `--bin` 生成目录式可执行产物
 - `--appimage` 构建 AppImage
 - `--deb` 构建 `.deb` 包，需要系统中存在 `dpkg-deb`
+
+本地、Docker 与 GitHub 共用 `resources/build-deb.sh`，采用标准 `dpkg-deb` 和 gzip 压缩。GitHub 发布前还会检查 Ubuntu 20.04 的旧版 dpkg 解包，以及 Ubuntu 22.04 中安装后的命令入口和图标。版本号以 `core/version.py` 为准，发布 tag 必须与之对应。
+
+Docker 构建会同步当前 `requirements.txt` 中的 Python 依赖；若旧构建镜像缺少系统库，请使用 `./docker-build.sh --rebuild` 重建镜像。
 
 在 Arch Linux 上，`dpkg-deb` 来自：
 

@@ -262,6 +262,7 @@ class BuildProgressDialog(FluentDialog):
         """设置完成状态"""
         self._spin_timer.stop()
         self._finished = True
+        self.cancel_btn.setEnabled(True)
 
         if success:
             self._set_stage(3)
@@ -274,7 +275,7 @@ class BuildProgressDialog(FluentDialog):
             self.cancel_btn.setText("关闭")
             self.cancel_btn.setIcon(FIF.ACCEPT)
         else:
-            self.title_label.setText(f"「{self.project_name}」构建失败")
+            self.title_label.setText(f"「{self.project_name}」" + ("已取消" if self._cancelled else "构建失败"))
             self.spinner.setIcon(FIF.INFO)
             self.spinner.setStyleSheet("color: #f44747;")
             self.status_label.setText(message or "构建失败")
@@ -282,14 +283,12 @@ class BuildProgressDialog(FluentDialog):
 
     def _on_cancel(self):
         """取消/关闭按钮"""
-        if self._cancelled:
-            # 已经在取消中，直接关闭
-            self.reject()
-            return
-
         if getattr(self, '_finished', False):
             # 已完成或失败，直接关闭
             self.accept()
+            return
+
+        if self._cancelled:
             return
 
         # 取消构建

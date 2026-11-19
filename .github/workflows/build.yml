@@ -46,12 +46,19 @@ jobs:
 
       - name: 解析版本号
         id: version
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${{ github.event.inputs.version || 'dev' }}" >> "$GITHUB_OUTPUT"
+          VERSION=$(python -c 'from core.version import VERSION; print(VERSION)')
+          if [[ "${GITHUB_REF}" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$VERSION" ]]; then
+            echo "Tag 与应用版本不一致"
+            exit 1
           fi
+          if [[ -n "$REQUESTED_VERSION" && "$REQUESTED_VERSION" != dev && "$REQUESTED_VERSION" != "$VERSION" ]]; then
+            echo "手动指定版本与应用版本不一致，请先更新 core/version.py"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       # ── 构建二进制 ──────────────────────────────────────────
       - name: 构建二进制（PyInstaller）
@@ -61,6 +68,15 @@ jobs:
           ./dist/phpbox/phpbox -h
           echo "二进制大小: $(du -sh dist/phpbox | cut -f1)"
           tar -C dist -czf dist/phpbox-linux-x86_64.tar.gz phpbox
+
+      - name: 打包后界面启动检查
+        run: |
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout --kill-after=5s 8s ./dist/phpbox/phpbox > /tmp/phpbox-gui.log 2>&1
+          STATUS=$?
+          set -e
+          cat /tmp/phpbox-gui.log
+          test "$STATUS" -eq 124
 
       # ── 构建 AppImage ────────────────────────────────────────
       - name: 下载 appimagetool
@@ -108,45 +124,25 @@ jobs:
       # ── 构建 .deb ────────────────────────────────────────────
       - name: 构建 .deb 包
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          DEB_DIR="deb_package"
-          rm -rf "$DEB_DIR"
-          mkdir -p "$DEB_DIR/DEBIAN"
-          mkdir -p "$DEB_DIR/opt/phpbox"
-          mkdir -p "$DEB_DIR/usr/bin"
-          mkdir -p "$DEB_DIR/usr/share/applications"
+          sh resources/build-deb.sh "${{ steps.version.outputs.version }}"
 
-          cat > "$DEB_DIR/DEBIAN/control" << EOF
-          Package: phpbox
-          Version: ${VERSION}
-          Section: devel
-          Priority: optional
-          Architecture: amd64
-          Depends: docker-ce | docker.io
-          Maintainer: phpbox <noreply@github.com>
-          Description: PHP Development Environment Manager
-           A GUI application to manage PHP Docker development environments.
-           Supports multiple PHP versions (7.2-8.4) and 60+ extensions.
-          EOF
+      - name: 旧版 dpkg 解包兼容性
+        run: |
+          docker run --rm --network none -v "$PWD/dist:/packages:ro" ubuntu:20.04 \
+            dpkg --unpack "/packages/phpbox_${{ steps.version.outputs.version }}_amd64.deb"
 
-          cp -r dist/phpbox/. "$DEB_DIR/opt/phpbox/"
-          cat > "$DEB_DIR/usr/bin/phpbox" << 'EOF'
-          #!/bin/bash
-          exec /opt/phpbox/phpbox "$@"
-          EOF
-          chmod +x "$DEB_DIR/usr/bin/phpbox"
-          ln -s phpbox "$DEB_DIR/usr/bin/pbox"
-          cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
-          mkdir -p "$DEB_DIR/usr/share/icons/hicolor/256x256/apps"
-          cp resources/icons/phpbox-256.png "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/phpbox.png"
-          sh resources/install-cli.sh "$DEB_DIR/usr"
-          dpkg-deb --root-owner-group -Zgzip --build "$DEB_DIR" "dist/phpbox_${VERSION}_amd64.deb"
-          dpkg-deb --info "dist/phpbox_${VERSION}_amd64.deb"
-          dpkg-deb --contents "dist/phpbox_${VERSION}_amd64.deb" > /dev/null
-          dpkg-deb --extract "dist/phpbox_${VERSION}_amd64.deb" /tmp/phpbox-deb-check
-          cmp resources/icons/phpbox-256.png /tmp/phpbox-deb-check/usr/share/icons/hicolor/256x256/apps/phpbox.png
-          rm -rf "$DEB_DIR"
-          echo ".deb 大小: $(du -sh dist/phpbox_${VERSION}_amd64.deb | cut -f1)"
+      - name: deb 安装后检查命令和图标
+        run: |
+          docker run --rm -v "$PWD/dist:/packages:ro" ubuntu:22.04 sh -ec '
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y "$1"
+            phpbox --help > /dev/null
+            test "$(phpbox --version)" = "pbox $2"
+            test "$(pbox --version)" = "pbox $2"
+            test "$(pbox-proxy --version)" = "pbox $2"
+            test -s /usr/share/icons/hicolor/256x256/apps/phpbox.png
+            grep -qx "Icon=phpbox" /usr/share/applications/phpbox.desktop
+          ' sh "/packages/phpbox_${{ steps.version.outputs.version }}_amd64.deb" "${{ steps.version.outputs.version }}"
 
       # ── 上传 Artifacts（每次构建都保留）──────────────────────
       - name: 上传构建产物

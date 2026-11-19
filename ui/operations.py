@@ -1,7 +1,8 @@
 from collections import deque
+from itertools import islice
 
 from PyQt6.QtCore import QTimer, Qt, QSize
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QTextCursor
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidgetItem
 from qfluentwidgets import (TitleLabel, CaptionLabel, StrongBodyLabel, PushButton,
                             PrimaryPushButton, ListWidget, FluentIcon as FIF, setCustomStyleSheet)
@@ -14,6 +15,7 @@ class OperationsPage(QWidget):
         self.setObjectName("operations")
         self.records = []
         self._displayed_record = None
+        self._displayed_lines = 0
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
@@ -57,6 +59,7 @@ class OperationsPage(QWidget):
         self.logs = LogTextEdit()
         self.logs.setReadOnly(True)
         self.logs.document().setMaximumBlockCount(2000)
+        self.logs.setPlainText("选择操作查看日志；切换页面不会取消操作。")
         detail_layout.addWidget(self.logs, 1)
         buttons = QHBoxLayout()
         self.open_window = PrimaryPushButton(FIF.LINK, "打开操作窗口")
@@ -74,9 +77,18 @@ class OperationsPage(QWidget):
         self.list.currentRowChanged.connect(self.refresh)
         self.list.itemDoubleClicked.connect(self.open_current_window)
         self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(200)
         self.timer.timeout.connect(self.refresh)
-        self.timer.start(200)
         self.refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh()
+
+    def hideEvent(self, event):
+        self.timer.stop()
+        super().hideEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -90,9 +102,10 @@ class OperationsPage(QWidget):
 
     def track(self, worker, title, key="", cancellable=False, dialog=None):
         record = dict(worker=worker, title=title, key=key, state="执行中",
-                      logs=deque(maxlen=2000), cancellable=cancellable, dialog=dialog)
+                      logs=deque(maxlen=2000), line_count=0, cancellable=cancellable, dialog=dialog)
         if dialog is not None:
             dialog.destroyed.connect(lambda: record.update(dialog=None))
+            dialog.destroyed.connect(self.refresh)
         self.records.append(record)
         item = QListWidgetItem(title + "\n执行中")
         item.setSizeHint(QSize(180, 64))
@@ -100,20 +113,32 @@ class OperationsPage(QWidget):
         self.list.addItem(item)
         self.list.setCurrentRow(len(self.records) - 1)
         if hasattr(worker, "progress"):
-            worker.progress.connect(lambda line: record["logs"].append(str(line)[-4096:]))
+            worker.progress.connect(lambda line: self._append_logs(record, str(line)[-4096:]))
         if hasattr(worker, "succeeded"):
-            worker.succeeded.connect(lambda result: self.finish(record, True, getattr(result, "output", "")))
+            worker.succeeded.connect(lambda result: self.finish(
+                record, getattr(result, "success", True), getattr(result, "output", "")))
             worker.failed.connect(lambda message: self.finish(record, False, message))
         else:
             worker.finished.connect(lambda success, message, logs: self.finish(record, success, message))
 
+    def _append_logs(self, record, text):
+        lines = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        record['logs'].extend(lines)
+        record['line_count'] += len(lines)
+        index = self.list.currentRow()
+        if (self.isVisible() and 0 <= index < len(self.records)
+                and self.records[index] is record and not self.timer.isActive()):
+            self.timer.start()
+
     def finish(self, record, success, message):
-        record["state"] = "已完成" if success else "未完成"
-        record["logs"].append(str(message)[-65536:])
+        cancelled = record['worker'].cancel_event.is_set()
+        record["state"] = "已完成" if success else "已取消" if cancelled else "未完成"
+        self._append_logs(record, str(message)[-65536:])
         record["worker"] = None
         self.refresh()
 
     def refresh(self, *args):
+        self.timer.stop()
         active = sum(r["state"] in ("执行中", "正在取消") for r in self.records)
         self.summary.setText(f"{len(self.records)} 条记录 · {active} 项进行中" if self.records else "暂无操作记录")
         for i, record in enumerate(self.records):
@@ -123,24 +148,39 @@ class OperationsPage(QWidget):
                 item.setText(text)
         index = self.list.currentRow()
         record = self.records[index] if 0 <= index < len(self.records) else None
-        content = "\n".join(record["logs"]) if record else "选择操作查看日志；切换页面不会取消操作。"
-        changed = record is not self._displayed_record
-        if changed or content != self.logs.toPlainText():
-            bar = self.logs.verticalScrollBar()
-            position = bar.value()
-            follow = changed or position >= bar.maximum() - 2
-            self.logs.setPlainText(content)
-            bar.setValue(bar.maximum() if follow else position)
+        if self.isVisible():
+            self._refresh_logs(record)
         title = record["title"] if record else "操作日志"
         state = record["state"] if record else "未选择"
         self.operation_title.setText(title)
         if state != self.state_badge.text():
             self.state_badge.setText(state)
             self.state_badge.setTone("accent" if state == "执行中" else "success" if state == "已完成"
-                                    else "warning" if state in ("未完成", "正在取消") else "neutral")
-        self._displayed_record = record
+                                    else "warning" if state in ("未完成", "正在取消", "已取消") else "neutral")
         self.cancel.setEnabled(bool(record and record["cancellable"] and record["state"] == "执行中"))
         self.open_window.setEnabled(bool(record and record["dialog"] is not None))
+
+    def _refresh_logs(self, record):
+        changed = record is not self._displayed_record
+        count = record['line_count'] if record else 0
+        added = count - self._displayed_lines
+        if not changed and not added:
+            return
+        bar = self.logs.verticalScrollBar()
+        position = bar.value()
+        follow = changed or position >= bar.maximum() - 2
+        if record is None:
+            self.logs.setPlainText("选择操作查看日志；切换页面不会取消操作。")
+        elif changed or added >= len(record['logs']):
+            self.logs.setPlainText('\n'.join(record['logs']))
+        else:
+            lines = list(islice(reversed(record['logs']), added))[::-1]
+            cursor = QTextCursor(self.logs.document())
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText(('\n' if self._displayed_lines else '') + '\n'.join(lines))
+        bar.setValue(bar.maximum() if follow else position)
+        self._displayed_record = record
+        self._displayed_lines = count
 
     def open_current_window(self, *args):
         index = self.list.currentRow()
@@ -153,7 +193,12 @@ class OperationsPage(QWidget):
             dialog.activateWindow()
 
     def cancel_current(self):
-        record = self.records[self.list.currentRow()]
+        index = self.list.currentRow()
+        if not 0 <= index < len(self.records):
+            return
+        record = self.records[index]
+        if not record['cancellable'] or record['state'] != '执行中':
+            return
         record["state"] = "正在取消"
         record["worker"].stop()
         self.refresh()

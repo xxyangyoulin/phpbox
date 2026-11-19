@@ -331,7 +331,7 @@ class ProjectManager:
             print(f"设置自启动失败: {e}")
             return False
 
-    def delete_project(self, project: Project, delete_directory: bool = True) -> bool:
+    def delete_project(self, project: Project, delete_directory: bool = False, delete_volumes: bool = False) -> bool:
         from core.environment import operation_lock, read_binding, EnvironmentManager, write_binding
         from contextlib import ExitStack
         try:
@@ -339,28 +339,38 @@ class ProjectManager:
                 if (project.path / '.phpbox/switch.json').exists():
                     raise RuntimeError('请先恢复未完成的环境切换')
                 binding = read_binding(project.path)
-                if binding:
-                    manager = EnvironmentManager()
-                    environment = manager.load(binding['environment_id'])
-                    locks.enter_context(operation_lock(environment.path))
-                    locks.enter_context(manager.maintenance(environment))
-                    manager.assert_project_idle(project.path)
+                if not binding:
+                    return self._delete_project(project, delete_directory, delete_volumes)
+                manager = EnvironmentManager()
+                environment = manager.load(binding['environment_id'])
+                locks.enter_context(operation_lock(environment.path))
+                locks.enter_context(manager.maintenance(environment))
+                manager.assert_project_idle(project.path)
+                try:
                     write_binding(project.path, dict(binding, enabled=False))
                     manager.sync_cron(environment)
-                success = self._delete_project(project, delete_directory)
-                if binding and not success:
-                    write_binding(project.path, binding)
-                    manager.sync_cron(environment)
-                return success
+                    if not self._delete_project(project, delete_directory, delete_volumes):
+                        raise RuntimeError('删除项目未完成')
+                except Exception as exc:
+                    try:
+                        write_binding(project.path, binding)
+                        manager.sync_cron(environment)
+                    except Exception as rollback_error:
+                        raise RuntimeError(f'{exc}；恢复原调度失败：{rollback_error}') from exc
+                    raise
+                return True
         except Exception as exc:
             print(f'删除项目失败: {exc}')
             return False
 
-    def _delete_project(self, project: Project, delete_directory: bool = True) -> bool:
+    def _delete_project(self, project: Project, delete_directory: bool, delete_volumes: bool) -> bool:
         """删除项目"""
         try:
             docker = DockerManager(project.path)
-            result = docker._run_command(["down", "--volumes", "--remove-orphans"])
+            args = ["down", "--remove-orphans"]
+            if delete_volumes:
+                args.append("--volumes")
+            result = docker._run_command(args)
             if not result.success:
                 print(f"停止容器失败，保留项目目录: {result.error}")
                 return False
@@ -374,6 +384,24 @@ class ProjectManager:
         except Exception as e:
             print(f"删除项目失败: {e}")
             return False
+
+    def get_removed_projects(self):
+        return [path for path in sorted(BASE_DIR.iterdir())
+                if path.is_dir() and (path / '.phpbox/deleted').is_file()] if BASE_DIR.exists() else []
+
+    def restore_project(self, name):
+        from core.environment import operation_lock
+        valid, message = self.is_valid_name(name)
+        if not valid:
+            raise ValueError(message)
+        path = BASE_DIR / name
+        with operation_lock(path):
+            marker = path / '.phpbox/deleted'
+            if not marker.is_file():
+                raise ValueError('项目未被移除，请刷新列表')
+            if not (path / 'docker-compose.yml').is_file():
+                raise ValueError('项目缺少 docker-compose.yml，请先恢复配置文件')
+            marker.unlink()
 
     def rename_project(self, project: Project, new_name: str) -> bool:
         from core.environment import operation_lock, read_binding, EnvironmentManager, write_binding

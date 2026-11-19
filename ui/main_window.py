@@ -9,6 +9,7 @@ import time as _time
 import webbrowser
 import functools
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, List, Dict
 
 from PyQt6.QtWidgets import (
@@ -45,7 +46,7 @@ from ui.dialogs.rebuild_image import RebuildImageDialog
 from ui.dialogs.task_center import TaskCenterPage
 from ui.worker import OperationWorker, running_workers
 from ui.operations import OperationsPage
-from ui.styles import SurfaceCard, StatusBadge, themed_color
+from ui.styles import SurfaceCard, StatusBadge, FluentDialog, themed_color
 from ui.updates import UpdateChecker
 
 
@@ -1045,6 +1046,8 @@ class ProjectDashboardPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._php_info_request = 0
+        self._php_config_request = 0
+        self._config_loading = False
         self.php_info_loaded.connect(self._on_php_info_loaded)
         self.setObjectName("ProjectDashboardPage")
         self.current_project: Optional[Project] = None
@@ -1191,6 +1194,8 @@ class ProjectDashboardPage(QWidget):
             loading: 是否正在加载中
         """
         self._php_info_request += 1
+        self._php_config_request += 1
+        self._config_loading = False
         self.dashboard._clear_php_info()
         self.current_project = project
         self.dashboard.update_project(project, loading=loading)
@@ -1249,13 +1254,13 @@ class ProjectDashboardPage(QWidget):
                 usage = get_port_usage(int(project.port), project.name, include_configured_projects=False)
                 if usage:
                     raise RuntimeError(f"端口 {project.port} 已被 {usage} 占用")
-            result = getattr(DockerManager(project.path), operation)()
+            result = getattr(DockerManager(project.path, cancel=worker.cancel_event), operation)()
             if not result.success:
                 raise RuntimeError(str(result.error))
             return result
 
         worker = OperationWorker(run)
-        panel.track(worker, f"{project.name} · {self._OP_LABELS[operation][0]}", key)
+        panel.track(worker, f"{project.name} · {self._OP_LABELS[operation][0]}", key, cancellable=True)
         worker.succeeded.connect(lambda result: self._on_docker_operation_result(result, project.name, operation))
         worker.failed.connect(lambda message: self._notify("操作失败", message, "error"))
         worker.start()
@@ -1306,8 +1311,12 @@ class ProjectDashboardPage(QWidget):
         """刷新完成回调"""
         self.projects = projects
         main_win = self.window()
+        if {p.name for p in projects} != {p.name for p in main_win.projects}:
+            main_win._on_projects_loaded(projects)
+            return
         main_win.projects = projects
         main_win._sort_project_navigation()
+        main_win.task_center_page.set_projects(projects)
         self.refresh_status()
 
     def view_service_logs(self, service):
@@ -1426,13 +1435,17 @@ class ProjectDashboardPage(QWidget):
         w = MessageBox(
             "确认删除",
             f"确定要删除项目 '{self.current_project.name}' 吗？\n\n"
-            "将移除项目并删除其容器和 Docker 数据卷，共享 PHP 环境保留。\n"
-            "默认保留原位置的项目目录、源码和配置；勾选下方选项将永久删除它们。\n\n"
+            "将移除项目并删除其容器，共享 PHP 环境保留。\n"
+            "默认保留目录和 Docker 数据卷，可稍后恢复项目。\n"
+            "删除目录会清除其中的源码、配置及绑定挂载数据；\n"
+            "删除数据卷会清除项目的数据库等卷内数据，均不可撤销。\n\n"
             f"项目目录：{self.current_project.path}",
             self.window()
         )
         delete_directory_cb = CheckBox("同时删除项目目录", w)
         w.textLayout.addWidget(delete_directory_cb)
+        delete_volumes_cb = CheckBox("同时删除 Docker 数据卷（包括卷内数据库数据）", w)
+        w.textLayout.addWidget(delete_volumes_cb)
         if w.exec():
             if getattr(self, "_deleting", False):
                 return
@@ -1440,8 +1453,10 @@ class ProjectDashboardPage(QWidget):
             target = self.current_project
             self._delete_target = target
             delete_directory = delete_directory_cb.isChecked()
+            delete_volumes = delete_volumes_cb.isChecked()
             self.operation_worker = OperationWorker(
-                lambda: self.project_manager.delete_project(target, delete_directory=delete_directory))
+                lambda: self.project_manager.delete_project(
+                    target, delete_directory=delete_directory, delete_volumes=delete_volumes))
             self.operation_worker.succeeded.connect(self._on_project_deleted)
             self.operation_worker.failed.connect(self._on_delete_failed)
             self.operation_worker.start()
@@ -1720,17 +1735,41 @@ class ProjectDashboardPage(QWidget):
             return
 
         # 获取当前配置值
+        if self._config_loading:
+            return
+        project = self.current_project
+        request = self._php_config_request
         current_config = self.dashboard._config_current_values.copy()
         if not current_config:
-            # 如果没有缓存，重新获取
-            docker = DockerManager(self.current_project.path)
-            current_config = docker.get_php_info()
+            self._config_loading = True
+            self.config_worker = OperationWorker(lambda: DockerManager(project.path).get_php_info())
+            self.config_worker.succeeded.connect(
+                lambda config: self._open_php_config(project, request, config))
+            self.config_worker.failed.connect(
+                lambda error: self._open_php_config(project, request, {}, error))
+            self.config_worker.start()
+            return
+        self._open_php_config(project, request, current_config)
 
-        # 打开配置编辑对话框
+    def _open_php_config(self, project, request, current_config, error=''):
+        if (request != self._php_config_request or not self.current_project
+                or self.current_project.path != project.path):
+            return
+        self._config_loading = False
+        if not self.current_project.is_running:
+            return
+        if (self.current_project.environment_id != project.environment_id
+                or self.current_project.php_version != project.php_version):
+            self.dashboard._clear_php_info()
+            InfoBar.warning('PHP 环境已变更', '请重新打开配置，读取当前环境的设置。', parent=self)
+            return
+        if not current_config:
+            InfoBar.error('无法读取 PHP 配置', error or '请确认容器运行正常后重试。', parent=self)
+            return
         try:
             dialog = PhpConfigDialog(
-                self.current_project.path,
-                self.current_project.name,
+                project.path,
+                project.name,
                 current_config,
                 self
             )
@@ -1868,6 +1907,12 @@ class MainWindow(FluentWindow):
         self.docker_ready = docker_ready
         self.docker_error = docker_error
         self.restart_args = None
+        self._quit_dialog = None
+        self._quit_timer = QTimer(self)
+        self._quit_timer.setInterval(200)
+        self._quit_timer.timeout.connect(self._poll_quit)
+        self._batch_busy = False
+        self._batch_actions = []
         self.update_checker = UpdateChecker(self)
         self.update_checker.available.connect(self._notify_update)
 
@@ -1919,12 +1964,15 @@ class MainWindow(FluentWindow):
         self.project_actions_menu = RoundMenu(parent=self)
         for icon, text, callback in [
             (FIF.SYNC, "刷新项目", self._refresh_all_projects),
+            (FIF.HISTORY, "恢复已移除项目", self.restore_removed_project),
             (FIF.PLAY, "启动全部项目", self.start_all_projects),
             (FIF.PAUSE, "停止全部项目", self.stop_all_projects),
         ]:
             action = Action(icon, text)
             action.triggered.connect(callback)
             self.project_actions_menu.addAction(action)
+            if callback in (self.start_all_projects, self.stop_all_projects):
+                self._batch_actions.append(action)
         self.navigationInterface.addItem(
             routeKey='project_actions', icon=FIF.MORE, text="项目操作",
             onClick=lambda: self.project_actions_menu.exec(QCursor.pos()),
@@ -1996,6 +2044,13 @@ class MainWindow(FluentWindow):
                 nav_item.set_running_state(is_running, is_partial)
 
     def _sort_project_navigation(self):
+        for project in self.projects:
+            item = self._project_nav_items.get(f'proj_{project.name}')
+            if item is not None:
+                item.project_php_version = project.php_version
+                item.set_running_state(project.is_running, project.health_status == 'partial')
+                item.setToolTip(f"PHP {project.php_version} | 端口:{project.port} | {project.health_summary}")
+                item.update()
         self.projects.sort(key=lambda p: (p.health_status == 'stopped', p.name))
         keys = [f'proj_{p.name}' for p in self.projects]
         if keys == self._project_nav_keys:
@@ -2014,15 +2069,6 @@ class MainWindow(FluentWindow):
         Args:
             select_project: 可选，指定要选中的项目名
         """
-        # 移除旧项目导航项
-        for key in self._project_nav_keys:
-            try:
-                self.navigationInterface.removeWidget(key)
-            except Exception:
-                pass
-        self._project_nav_keys.clear()
-        self._project_nav_items.clear()
-
         # 异步加载项目
         threading.Thread(
             target=self._async_load_projects,
@@ -2038,6 +2084,15 @@ class MainWindow(FluentWindow):
 
     def _on_projects_loaded(self, projects: list, select_project: str = None):
         """项目列表加载完成回调"""
+        current = self.dashboard_page.current_project
+        current_page = self.stackedWidget.currentWidget()
+        explicit_selection = select_project is not None
+        if select_project is None and current:
+            select_project = current.name
+        for key in self._project_nav_keys:
+            self.navigationInterface.removeWidget(key)
+        self._project_nav_keys.clear()
+        self._project_nav_items.clear()
         projects.sort(key=lambda p: (p.health_status == 'stopped', p.name))
         self.projects = projects
         self.dashboard_page.projects = self.projects
@@ -2064,15 +2119,44 @@ class MainWindow(FluentWindow):
 
         # 选中指定项目或第一个
         if self.projects:
-            if select_project:
-                for project in self.projects:
-                    if project.name == select_project:
-                        self.on_project_clicked(project)
-                        return
-            # 默认选中第一个
-            self.on_project_clicked(self.projects[0])
+            target = next((p for p in self.projects if p.name == select_project), self.projects[0])
+            self.on_project_clicked(target)
+            if current and not explicit_selection and current_page is not self.dashboard_page:
+                self.switchTo(current_page)
         else:
+            self.dashboard_page.current_project = None
             self.dashboard_page.show_project_view(False)
+
+    def restore_removed_project(self):
+        from qfluentwidgets import ComboBox, MessageBoxBase
+        removed = self.project_manager.get_removed_projects()
+        if not removed:
+            self._notify('恢复项目', '没有保留目录的已移除项目', 'info')
+            return
+        box = MessageBoxBase(self)
+        box.viewLayout.addWidget(StrongBodyLabel('恢复已移除项目'))
+        description = BodyLabel('恢复后重新显示在列表中，不会自动启动容器或定时任务。\n'
+                                '保留的命名数据卷可在原配置下复用；已删除的数据无法恢复。\n'
+                                '如果原 PHP 环境已删除，需重新选择可用环境。')
+        description.setWordWrap(True)
+        box.viewLayout.addWidget(description)
+        choices = ComboBox()
+        choices.addItems([path.name for path in removed])
+        box.viewLayout.addWidget(choices)
+        path_label = BodyLabel(str(removed[0]))
+        path_label.setWordWrap(True)
+        choices.currentIndexChanged.connect(lambda index: path_label.setText(str(removed[index])))
+        box.viewLayout.addWidget(path_label)
+        box.yesButton.setText('恢复项目')
+        if box.exec():
+            name = choices.currentText()
+            try:
+                self.project_manager.restore_project(name)
+            except (OSError, ValueError, RuntimeError) as exc:
+                self._notify('恢复失败', str(exc), 'error')
+                return
+            self.load_projects(select_project=name)
+            self._notify('项目已恢复', f'「{name}」已重新加入列表，可手动启动。')
 
     def open_task_center(self):
         self.navigationInterface.setCurrentItem("task_center")
@@ -2081,6 +2165,9 @@ class MainWindow(FluentWindow):
 
     def on_project_clicked(self, project: Project):
         """导航项点击 —— 更新仪表盘"""
+        project = next((p for p in self.projects if p.name == project.name), None)
+        if project is None:
+            return
         route_key = f"proj_{project.name}"
         self.navigationInterface.setCurrentItem(route_key)
 
@@ -2228,89 +2315,106 @@ class MainWindow(FluentWindow):
 
     def start_all_projects(self):
         """启动所有已停止的项目"""
-        if not self.ensure_docker_ready():
-            return
-        # 先刷新项目状态
-        self.projects = self.project_manager.get_all_projects()
-
-        if not self.projects:
-            self._notify("提示", "没有可启动的项目", "warning")
-            return
-
-        stopped_projects = [p for p in self.projects if not p.is_running]
-        if not stopped_projects:
-            self._notify("提示", "所有项目已在运行中", "info")
-            return
-
-        # 过滤端口冲突的项目
-        to_start = []
-        conflict_ports = []
-        for project in stopped_projects:
-            try:
-                port = int(project.port)
-            except ValueError:
-                port = 8080
-            usage = get_port_usage(port, project.name, include_configured_projects=False)
-            if usage:
-                conflict_ports.append((project.name, project.port, usage))
-            else:
-                to_start.append(project)
-
-        if conflict_ports:
-            msg = "、".join([f"{name}({port})被{usage}占用" for name, port, usage in conflict_ports])
-            self._notify("端口冲突", f"以下项目端口被占用: {msg}", "warning")
-
-        if not to_start:
-            return
-
-        # 异步启动所有项目
-        threading.Thread(
-            target=self._async_batch_operation,
-            args=(to_start, "up"),
-            daemon=True
-        ).start()
-
-    def _async_batch_operation(self, projects: list, operation: str):
-        """异步批量执行 docker 操作"""
-        success_count = 0
-        for project in projects:
-            result = getattr(DockerManager(project.path), operation)()
-            if result.success:
-                success_count += 1
-        ok_title, ok_verb, _ = ProjectDashboardPage._OP_LABELS[operation]
-        label = "批量启动" if operation == "up" else "批量停止"
-        QTimer.singleShot(0, functools.partial(
-            self._on_batch_operation_result, success_count, label))
+        self._start_batch_operation("up")
 
     def stop_all_projects(self):
         """停止所有正在运行的项目"""
-        if not self.ensure_docker_ready():
+        self._start_batch_operation("stop")
+
+    def _start_batch_operation(self, operation):
+        if self._batch_busy or not self.ensure_docker_ready():
             return
-        # 先刷新项目状态
-        self.projects = self.project_manager.get_all_projects()
+        self._batch_busy = True
+        for action in self._batch_actions:
+            action.setEnabled(False)
+        label = "批量启动" if operation == "up" else "批量停止"
+        self._notify(label, "正在后台检查项目状态并执行操作…", "info")
+        worker = OperationWorker(lambda: self._run_batch_operation(operation, worker.cancel_event))
+        self.batch_worker = worker
+        self.operations_page.track(worker, label, cancellable=True)
+        worker.succeeded.connect(lambda result: self._on_batch_operation_result(result, operation))
+        worker.failed.connect(lambda message: self._notify(label + "失败", message, "error"))
+        worker.finished.connect(self._finish_batch_operation)
+        worker.start()
 
-        if not self.projects:
-            self._notify("提示", "没有可停止的项目", "warning")
+    @staticmethod
+    def _run_batch_operation(operation, cancel):
+        projects = ProjectManager().get_all_projects()
+        targets, skipped = [], []
+        for project in projects:
+            skip = project.is_running if operation == "up" else (
+                not project.is_running and project.health_status == 'stopped')
+            if skip:
+                skipped.append((project.name, '已在运行' if operation == 'up' else '已停止'))
+            else:
+                targets.append(project)
+        succeeded, failed = [], []
+        cancelled = False
+        for index, project in enumerate(targets):
+            if cancel.is_set():
+                cancelled = True
+                skipped.extend((p.name, '操作已取消，未执行') for p in targets[index:])
+                break
+            try:
+                if operation == "up":
+                    try:
+                        port = int(project.port)
+                    except ValueError:
+                        port = 8080
+                    usage = get_port_usage(port, project.name, include_configured_projects=False)
+                    if usage:
+                        skipped.append((project.name, f'端口 {project.port} 被 {usage} 占用'))
+                        continue
+                result = getattr(DockerManager(project.path, cancel=cancel), operation)()
+                if result.success:
+                    succeeded.append(project.name)
+                else:
+                    failed.append((project.name, result.error or '容器操作失败，未返回错误详情'))
+                    cancelled = cancel.is_set()
+            except Exception as exc:
+                failed.append((project.name, str(exc) or type(exc).__name__))
+                cancelled = isinstance(exc, InterruptedError) or cancel.is_set()
+            if cancelled:
+                skipped.extend((p.name, '操作已取消，未执行') for p in targets[index + 1:])
+                break
+        summary = f'成功 {len(succeeded)} 个，失败 {len(failed)} 个，跳过 {len(skipped)} 个'
+        lines = [summary]
+        lines.extend(f'[成功] {name}' for name in succeeded)
+        lines.extend(f'[失败] {name}：{error}' for name, error in failed)
+        lines.extend(f'[跳过] {name}：{reason}' for name, reason in skipped)
+        if cancelled:
+            lines.append('批量操作已取消；此前完成的操作保留。')
+        return SimpleNamespace(total=len(projects), targets=len(targets), succeeded=succeeded,
+                               failed=failed, skipped=skipped, cancelled=cancelled, summary=summary,
+                               success=not cancelled and len(succeeded) == len(targets),
+                               output='\n'.join(lines))
+
+    def _finish_batch_operation(self):
+        self._batch_busy = False
+        for action in self._batch_actions:
+            action.setEnabled(True)
+        if self._quit_dialog is None:
+            self._refresh_all_projects()
+
+    def _on_batch_operation_result(self, result, operation):
+        label = "批量启动" if operation == "up" else "批量停止"
+        verb = "启动" if operation == "up" else "停止"
+        if not result.total:
+            self._notify("提示", f"没有可{verb}的项目", "warning")
             return
-
-        running_projects = [p for p in self.projects if p.is_running]
-        if not running_projects:
-            self._notify("提示", "没有正在运行的项目", "info")
+        if not result.targets:
+            message = "所有项目已在运行中" if operation == "up" else "没有正在运行的项目"
+            self._notify("提示", message, "info")
             return
-
-        # 异步停止所有项目
-        threading.Thread(
-            target=self._async_batch_operation,
-            args=(running_projects, "stop"),
-            daemon=True
-        ).start()
-
-    def _on_batch_operation_result(self, success_count: int, label: str):
-        """批量操作结果回调"""
-        if success_count > 0:
-            verb = "启动" if "启动" in label else "停止"
-            self._notify(label, f"已{verb} {success_count} 个项目")
-            QTimer.singleShot(500, self._refresh_all_projects)
+        if result.cancelled:
+            label += '已取消'
+            tone = 'warning'
+        elif result.failed:
+            label += '部分失败' if result.succeeded else '失败'
+            tone = 'warning' if result.succeeded else 'error'
+        else:
+            tone = 'success' if result.success else 'warning'
+        self._notify(label, result.summary + '。可在“后台操作”查看各项目结果。', tone)
 
     def _refresh_all_projects(self):
         """刷新所有项目状态"""
@@ -2362,15 +2466,74 @@ class MainWindow(FluentWindow):
         self.quit_app()
 
     def quit_app(self):
+        if self._quit_dialog is not None:
+            self._quit_dialog.showNormal()
+            self._quit_dialog.raise_()
+            self._quit_dialog.activateWindow()
+            return
         workers = running_workers()
-        if workers:
-            for worker in workers:
+        if not workers:
+            self.tray_icon.hide()
+            QApplication.quit()
+            return
+        self._quit_started = _time.monotonic()
+        self._quit_stopped = set()
+        dialog = FluentDialog(self)
+        self._quit_dialog = dialog
+        dialog.setWindowTitle("正在退出 PHPBox")
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setMinimumWidth(420)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.addWidget(StrongBodyLabel("正在等待后台操作结束"))
+        self._quit_status = BodyLabel()
+        self._quit_status.setWordWrap(True)
+        layout.addWidget(self._quit_status)
+        back = PushButton("返回应用")
+        back.clicked.connect(dialog.reject)
+        layout.addWidget(back)
+        dialog.rejected.connect(self._cancel_quit_wait)
+        dialog.show()
+        self._quit_timer.start()
+        self._poll_quit()
+
+    def _poll_quit(self):
+        if self._quit_dialog is None:
+            return
+        workers = running_workers()
+        for worker in workers:
+            if worker not in self._quit_stopped:
+                self._quit_stopped.add(worker)
                 if hasattr(worker, "stop"):
                     worker.stop()
-            QTimer.singleShot(100, self.quit_app)
+        if not workers:
+            self._quit_timer.stop()
+            self._quit_dialog.accept()
+            self._quit_dialog.deleteLater()
+            self._quit_dialog = None
+            self._quit_stopped.clear()
+            self.tray_icon.hide()
+            QApplication.quit()
             return
-        self.tray_icon.hide()
-        QApplication.quit()
+        elapsed = int(_time.monotonic() - self._quit_started)
+        message = (f"剩余 {len(workers)} 项操作，已等待 {elapsed} 秒。\n"
+                   "已请求取消可中断的操作，正在等待清理或回滚完成。\n"
+                   "返回应用不会撤销已发出的取消请求。")
+        if elapsed >= 10:
+            message += "\n等待时间较长，可返回应用查看后台日志。"
+        if self._quit_status.text() != message:
+            self._quit_status.setText(message)
+
+    def _cancel_quit_wait(self):
+        self._quit_timer.stop()
+        self._quit_dialog.deleteLater()
+        self._quit_dialog = None
+        self._quit_stopped.clear()
+        self.restart_args = None
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.stackedWidget.setCurrentWidget(self.operations_page)
 
     def closeEvent(self, event):
         event.ignore()

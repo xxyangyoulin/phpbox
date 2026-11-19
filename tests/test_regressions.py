@@ -80,7 +80,9 @@ class ProjectTests(unittest.TestCase):
     def test_delete_success(self):
         with patch('core.project.DockerManager') as factory:
             factory.return_value._run_command.return_value = DockerResult(True)
-            self.assertTrue(self.manager.delete_project(self.project))
+            self.assertTrue(self.manager.delete_project(self.project, delete_directory=True, delete_volumes=True))
+            factory.return_value._run_command.assert_called_once_with(
+                ['down', '--remove-orphans', '--volumes'])
         self.assertFalse(self.old.exists())
 
     def test_delete_preserving_directory_removes_project_from_discovery(self):
@@ -89,7 +91,7 @@ class ProjectTests(unittest.TestCase):
             factory.return_value._run_command.return_value = DockerResult(True)
             self.assertTrue(self.manager.delete_project(self.project, delete_directory=False))
             factory.return_value._run_command.assert_called_once_with(
-                ['down', '--volumes', '--remove-orphans'])
+                ['down', '--remove-orphans'])
         self.assertEqual((self.old / 'docker-compose.yml').read_bytes(), original)
         self.assertEqual((self.old / 'old/index.php').read_text(), 'source')
         self.assertEqual(self.manager.get_all_projects(with_status=False), [])
@@ -102,6 +104,129 @@ class ProjectTests(unittest.TestCase):
             self.assertFalse(self.manager.delete_project(self.project, delete_directory=False))
         self.assertFalse((self.old / '.phpbox/deleted').exists())
         self.assertTrue((self.old / 'old/index.php').exists())
+
+    def test_directory_and_volume_deletion_are_independent(self):
+        for directory, volumes in ((True, False), (False, True)):
+            with self.subTest(directory=directory, volumes=volumes):
+                path = self.root / ('delete-' + str(directory))
+                path.mkdir()
+                project = Project(path.name, path)
+                with patch('core.project.DockerManager') as factory:
+                    factory.return_value._run_command.return_value = DockerResult(True)
+                    self.assertTrue(self.manager.delete_project(project, directory, volumes))
+                    args = factory.return_value._run_command.call_args.args[0]
+                    self.assertEqual('--volumes' in args, volumes)
+                self.assertEqual(path.exists(), not directory)
+
+    def test_shared_delete_sync_failure_restores_binding_before_releasing_locks(self):
+        from core.environment import operation_lock, read_binding, write_binding
+        environment = SimpleNamespace(path=self.root / 'environment')
+        environment.path.mkdir()
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                binding = dict(id='a' * 32, environment_id='b' * 32, enabled=enabled)
+                write_binding(self.old, binding)
+                states = []
+
+                def sync(target):
+                    states.append(read_binding(self.old)['enabled'])
+                    for path in (self.old, environment.path):
+                        with self.assertRaises(RuntimeError), operation_lock(path):
+                            pass
+                    if len(states) == 1:
+                        raise RuntimeError('sync failed')
+
+                with patch('core.environment.EnvironmentManager', autospec=True) as manager, \
+                        patch('core.project.DockerManager') as docker:
+                    manager.return_value.load.return_value = environment
+                    manager.return_value.sync_cron.side_effect = sync
+                    self.assertFalse(self.manager.delete_project(self.project))
+                    docker.assert_not_called()
+                self.assertEqual(states, [False, enabled])
+                self.assertEqual(read_binding(self.old), binding)
+                self.assertFalse((self.old / '.phpbox/deleted').exists())
+
+    def test_shared_delete_container_failure_restores_schedule(self):
+        from core.environment import read_binding, write_binding
+        binding = dict(id='a' * 32, environment_id='b' * 32, enabled=True)
+        write_binding(self.old, binding)
+        environment = SimpleNamespace(path=self.root / 'environment')
+        environment.path.mkdir()
+        with patch('core.environment.EnvironmentManager', autospec=True) as manager, \
+                patch('core.project.DockerManager') as docker:
+            manager.return_value.load.return_value = environment
+            docker.return_value._run_command.return_value = DockerResult(False, error='down failed')
+            self.assertFalse(self.manager.delete_project(self.project))
+            self.assertEqual(manager.return_value.sync_cron.call_count, 2)
+        self.assertEqual(read_binding(self.old), binding)
+        self.assertFalse((self.old / '.phpbox/deleted').exists())
+
+    def test_shared_delete_reports_original_and_rollback_errors(self):
+        from core.environment import read_binding, write_binding
+        binding = dict(id='a' * 32, environment_id='b' * 32, enabled=True)
+        write_binding(self.old, binding)
+        environment = SimpleNamespace(path=self.root / 'environment')
+        environment.path.mkdir()
+        with patch('core.environment.EnvironmentManager', autospec=True) as manager, \
+                patch('core.project.DockerManager') as docker, patch('builtins.print') as output:
+            manager.return_value.load.return_value = environment
+            manager.return_value.sync_cron.side_effect = [RuntimeError('initial failure'),
+                                                         RuntimeError('rollback failure')]
+            self.assertFalse(self.manager.delete_project(self.project))
+            docker.assert_not_called()
+            message = output.call_args.args[0]
+            self.assertIn('initial failure', message)
+            self.assertIn('rollback failure', message)
+        self.assertEqual(read_binding(self.old), binding)
+
+    def test_successful_shared_delete_keeps_binding_disabled(self):
+        from core.environment import read_binding, write_binding
+        binding = dict(id='a' * 32, environment_id='b' * 32, enabled=True)
+        write_binding(self.old, binding)
+        environment = SimpleNamespace(path=self.root / 'environment')
+        environment.path.mkdir()
+        with patch('core.environment.EnvironmentManager', autospec=True) as manager, \
+                patch('core.project.DockerManager') as docker:
+            manager.return_value.load.return_value = environment
+            docker.return_value._run_command.return_value = DockerResult(True)
+            self.assertTrue(self.manager.delete_project(self.project))
+            manager.return_value.sync_cron.assert_called_once_with(environment)
+        self.assertFalse(read_binding(self.old)['enabled'])
+        self.assertTrue((self.old / '.phpbox/deleted').exists())
+
+    def test_restore_preserved_project_without_starting_containers(self):
+        with patch('core.project.DockerManager') as factory:
+            factory.return_value._run_command.return_value = DockerResult(True)
+            self.assertTrue(self.manager.delete_project(self.project))
+            self.assertEqual(self.manager.get_removed_projects(), [self.old])
+            factory.reset_mock()
+            self.manager.restore_project('old')
+            factory.assert_not_called()
+        self.assertEqual(self.manager.get_removed_projects(), [])
+        projects = self.manager.get_all_projects(with_status=False)
+        self.assertEqual([p.name for p in projects], ['old'])
+        self.assertFalse(projects[0].is_running)
+        self.assertEqual((self.old / 'old/index.php').read_text(), 'source')
+
+    def test_restore_invalid_or_missing_configuration_keeps_marker(self):
+        marker = self.old / '.phpbox/deleted'
+        marker.parent.mkdir()
+        marker.touch()
+        (self.old / 'docker-compose.yml').unlink()
+        for name in ('../old', 'old'):
+            with self.assertRaises(ValueError):
+                self.manager.restore_project(name)
+        self.assertTrue(marker.exists())
+
+    def test_restore_shared_project_keeps_tasks_disabled(self):
+        from core.environment import read_binding, write_binding
+        binding = dict(id='a' * 32, environment_id='b' * 32, enabled=False)
+        write_binding(self.old, binding)
+        (self.old / '.phpbox/deleted').touch()
+        with patch('core.environment.EnvironmentManager') as manager:
+            self.manager.restore_project('old')
+            manager.assert_not_called()
+        self.assertEqual(read_binding(self.old), binding)
 
 
 class ProcessTests(unittest.TestCase):
@@ -281,6 +406,21 @@ class InstallationTests(unittest.TestCase):
         sudo.write_text('#!/bin/sh\nif [ "$PHPBOX_TEST_FAIL_COPY" = 1 ] && [ "$1" = cp ]; then exit 1; fi\nexec "$@"\n')
         sudo.chmod(0o755)
         self.env = dict(os.environ, PATH=str(self.root / 'bin') + ':' + os.environ['PATH'])
+
+    def test_deb_rejects_stale_binary_before_packaging(self):
+        resources = self.root / 'resources'
+        resources.mkdir()
+        script = resources / 'build-deb.sh'
+        script.write_text(Path('resources/build-deb.sh').read_text())
+        self.binary.write_text('#!/bin/sh\nprintf "pbox 2.1.2\\n"\n')
+        dpkg = self.root / 'bin/dpkg-deb'
+        dpkg.write_text('#!/bin/sh\necho unexpected-packaging\nexit 99\n')
+        dpkg.chmod(0o755)
+        result = subprocess.run(['sh', str(script), '2.1.3'], env=self.env,
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('程序版本与安装包版本不一致', result.stderr)
+        self.assertNotIn('unexpected-packaging', result.stdout)
 
     def test_missing_binary_keeps_old_installation(self):
         self.binary.unlink()

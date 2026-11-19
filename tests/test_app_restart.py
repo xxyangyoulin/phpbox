@@ -42,13 +42,13 @@ class AppRestartTests(unittest.TestCase):
                     patch('ui.single_instance.os.getuid', return_value=f'restart-test-{os.getpid()}'), \
                     patch('PyQt6.QtWidgets.QApplication') as application, \
                     patch('PyQt6.QtCore.qInstallMessageHandler'), \
-                    patch('PyQt6.QtCore.QSettings') as settings, \
-                    patch('ui.styles.apply_theme'), \
+                    patch('core.settings.Settings') as settings, \
+                    patch('ui.styles.apply_theme_preference') as apply_preference, \
                     patch('ui.main_window.MainWindow') as window_factory, \
                     patch('ui.single_instance.SingleInstance') as instance_factory, \
                     patch('main.subprocess.run'), \
                     patch('main.os.execve') as execute:
-                settings.return_value.value.return_value = 'light'
+                settings.return_value.get_theme.return_value = 'light'
                 window_factory.return_value.restart_args = restart_args
 
                 def create_instance(request, parent):
@@ -74,6 +74,7 @@ class AppRestartTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as stopped:
                     main.main()
                 self.assertEqual(stopped.exception.code, 0)
+                apply_preference.assert_called_once_with(app, 'light')
                 if restart_args is None:
                     execute.assert_not_called()
                     continue

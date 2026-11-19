@@ -169,17 +169,17 @@ class DesignTests(unittest.TestCase):
         panel.show()
         panel.track(worker, '构建环境')
         record = panel.records[0]
-        record['logs'].extend(str(i) for i in range(300))
+        panel._append_logs(record, '\n'.join(str(i) for i in range(300)))
         panel.refresh()
         QTest.qWait(30)
         bar = panel.logs.verticalScrollBar()
         self.assertGreater(bar.maximum(), 0)
         bar.setValue(0)
-        record['logs'].append('新增输出')
+        panel._append_logs(record, '新增输出')
         panel.refresh()
         self.assertEqual(bar.value(), 0)
         bar.setValue(bar.maximum())
-        record['logs'].append('继续输出')
+        panel._append_logs(record, '继续输出')
         panel.refresh()
         self.assertEqual(bar.value(), bar.maximum())
 
@@ -200,6 +200,82 @@ class DesignTests(unittest.TestCase):
         worker.deleteLater()
         dialog.deleteLater()
         panel.deleteLater()
+
+    def test_background_logs_append_in_batches_without_full_text_reads(self):
+        panel = OperationsPage()
+        worker = OperationWorker(lambda: None)
+        self.addCleanup(panel.deleteLater)
+        self.addCleanup(worker.deleteLater)
+        panel.show()
+        panel.track(worker, '构建环境')
+        record = panel.records[0]
+        panel._append_logs(record, 'first')
+        panel.refresh()
+        with patch.object(panel.logs, 'setPlainText', wraps=panel.logs.setPlainText) as reset, \
+                patch.object(panel.logs, 'toPlainText', wraps=panel.logs.toPlainText) as read:
+            for i in range(100):
+                panel._append_logs(record, str(i))
+            self.assertTrue(panel.timer.isActive())
+            self.assertEqual(panel.logs.document().blockCount(), 1)
+            QTest.qWait(250)
+            self.assertEqual(panel.logs.document().blockCount(), 101)
+            self.assertFalse(panel.timer.isActive())
+            panel.refresh()
+            reset.assert_not_called()
+            read.assert_not_called()
+        self.assertEqual(panel.logs.toPlainText(), 'first\n' + '\n'.join(map(str, range(100))))
+
+    def test_hidden_logs_only_render_on_return_and_remain_bounded(self):
+        panel = OperationsPage()
+        worker = OperationWorker(lambda: None)
+        self.addCleanup(panel.deleteLater)
+        self.addCleanup(worker.deleteLater)
+        panel.show()
+        panel.track(worker, '构建环境')
+        record = panel.records[0]
+        panel._append_logs(record, 'first')
+        panel.hide()
+        self.assertFalse(panel.timer.isActive())
+        with patch.object(panel.logs, 'setPlainText', wraps=panel.logs.setPlainText) as reset:
+            for i in range(2100):
+                panel._append_logs(record, str(i))
+            panel.finish(record, True, 'done\n<literal>')
+            panel.refresh()
+            self.assertFalse(panel.timer.isActive())
+            reset.assert_not_called()
+        self.assertEqual(len(record['logs']), 2000)
+        panel.show()
+        self.assertEqual(panel.logs.document().blockCount(), 2000)
+        self.assertEqual(panel.logs.toPlainText(), '\n'.join(record['logs']))
+        panel._append_logs(record, 'next\nlast')
+        panel.refresh()
+        self.assertEqual(panel.logs.document().blockCount(), 2000)
+        self.assertEqual(panel.logs.toPlainText(), '\n'.join(record['logs']))
+
+    def test_log_selection_switch_and_clear_show_correct_content(self):
+        panel = OperationsPage()
+        worker = OperationWorker(lambda: None)
+        self.addCleanup(panel.deleteLater)
+        self.addCleanup(worker.deleteLater)
+        panel.show()
+        panel.track(worker, 'first')
+        first = panel.records[0]
+        panel._append_logs(first, 'one')
+        panel.track(worker, 'second')
+        second = panel.records[1]
+        panel._append_logs(second, 'two')
+        panel.refresh()
+        panel._append_logs(first, 'three')
+        self.assertFalse(panel.timer.isActive())
+        self.assertEqual(panel.logs.toPlainText(), 'two')
+        panel.list.setCurrentRow(0)
+        self.assertEqual(panel.logs.toPlainText(), 'one\nthree')
+        panel.finish(first, True, 'done')
+        panel.clear_finished()
+        self.assertEqual(panel.logs.toPlainText(), 'two')
+        panel.finish(second, True, 'done')
+        panel.clear_finished()
+        self.assertIn('选择操作查看日志', panel.logs.toPlainText())
 
     def test_enabled_database_affects_health_and_service_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -232,6 +308,7 @@ class DesignTests(unittest.TestCase):
             APP.processEvents()
             time.sleep(0.01)
         self.assertFalse(panel.is_busy('/demo'))
+        panel.show()
         self.assertIn('docker unavailable', panel.logs.toPlainText())
         self.assertFalse(panel.cancel.isEnabled())
         panel.clear_finished()

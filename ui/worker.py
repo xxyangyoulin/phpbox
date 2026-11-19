@@ -10,6 +10,9 @@ _workers = set()
 def register_worker(worker, title=None, dialog=None):
     _workers.add(worker)
     worker.setParent(QApplication.instance())
+    # 部分 worker 覆盖了 finished；原始信号才代表线程已真正退出。
+    QThread.finished.__get__(worker, QThread).connect(lambda: _workers.discard(worker))
+    worker.destroyed.connect(lambda: _workers.discard(worker))
     if title:
         for window in QApplication.topLevelWidgets():
             if hasattr(window, "operations_page"):
@@ -40,6 +43,8 @@ class OperationWorker(QThread):
 
     def run(self):
         try:
+            if self.cancel_event.is_set():
+                raise InterruptedError("操作已取消")
             result = self.operation()
         except Exception as exc:
             self.failed.emit(str(exc))

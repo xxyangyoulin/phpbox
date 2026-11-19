@@ -15,6 +15,7 @@ from core.docker import collect_environment_diagnostics
 from core.proxy import detect_system_proxy
 from core.settings import Settings
 from ui.styles import SurfaceCard, FluentDialog, themed_color
+from ui.worker import OperationWorker
 
 
 class DiagnosticRow(QWidget):
@@ -54,6 +55,7 @@ class EnvironmentDiagnosticsDialog(FluentDialog):
         super().__init__(parent)
         self.setWindowTitle("环境诊断")
         self.setMinimumSize(680, 560)
+        self._checking = False
         self._setup_ui()
         self.refresh_diagnostics()
 
@@ -92,13 +94,13 @@ class EnvironmentDiagnosticsDialog(FluentDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        refresh_btn = PushButton("刷新")
-        refresh_btn.clicked.connect(self.refresh_diagnostics)
-        btn_layout.addWidget(refresh_btn)
+        self.refresh_btn = PushButton("刷新")
+        self.refresh_btn.clicked.connect(self.refresh_diagnostics)
+        btn_layout.addWidget(self.refresh_btn)
 
-        copy_btn = PushButton("复制结果")
-        copy_btn.clicked.connect(self.copy_result)
-        btn_layout.addWidget(copy_btn)
+        self.copy_btn = PushButton("复制结果")
+        self.copy_btn.clicked.connect(self.copy_result)
+        btn_layout.addWidget(self.copy_btn)
 
         close_btn = PrimaryPushButton(FIF.ACCEPT, "关闭")
         close_btn.clicked.connect(self.accept)
@@ -119,34 +121,61 @@ class EnvironmentDiagnosticsDialog(FluentDialog):
         self.scroll_layout.addWidget(card)
 
     def refresh_diagnostics(self):
+        if self._checking:
+            return
+        self._checking = True
+        self.refresh_btn.setEnabled(False)
+        self.copy_btn.setEnabled(False)
+        self.summary_label.setText('正在检查环境…')
+        self.diagnostics_worker = OperationWorker(self._collect_diagnostics)
+        self.diagnostics_worker.succeeded.connect(self._show_diagnostics)
+        self.diagnostics_worker.failed.connect(self._diagnostics_failed)
+        self.diagnostics_worker.start()
+
+    @staticmethod
+    def _collect_diagnostics():
+        settings = Settings()
+        base_rows = []
+        all_rows = collect_environment_diagnostics()
+        for label, value in all_rows:
+            ok = value.startswith("正常")
+            base_rows.append((label, value, ok))
+
+        system_proxy = detect_system_proxy()
+        proxy = settings.get_proxy()
+        docker = shutil.which("docker")
+        proxy_rows = [
+            ("系统代理", system_proxy or "未检测到", bool(system_proxy)),
+            ("全局代理", proxy or "未配置", bool(proxy)),
+            ("主题设置", settings.get_theme(), True),
+            ("PATH 中的 docker", docker or "未找到", bool(docker)),
+        ]
+        return base_rows, proxy_rows
+
+    def _show_diagnostics(self, result):
+        self._checking = False
+        self.refresh_btn.setEnabled(True)
+        self.copy_btn.setEnabled(True)
         while self.scroll_layout.count():
             item = self.scroll_layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
-
-        settings = Settings()
-        base_rows = []
-        ok_count = 0
-        all_rows = collect_environment_diagnostics()
-        for label, value in all_rows:
-            ok = value.startswith("正常")
-            ok_count += int(ok)
-            base_rows.append((label, value, ok))
-
-        proxy_rows = [
-            ("系统代理", detect_system_proxy() or "未检测到", bool(detect_system_proxy())),
-            ("全局代理", settings.get_proxy() or "未配置", bool(settings.get_proxy())),
-            ("主题设置", settings.get_theme(), True),
-            ("PATH 中的 docker", shutil.which("docker") or "未找到", bool(shutil.which("docker"))),
-        ]
-        ok_count += sum(1 for _, _, ok in proxy_rows if ok)
+        base_rows, proxy_rows = result
+        ok_count = sum(1 for _, _, ok in base_rows + proxy_rows if ok)
         total = len(base_rows) + len(proxy_rows)
         self.summary_label.setText(f"{ok_count}/{total} 项状态正常")
 
         self._add_group("运行环境", base_rows)
         self._add_group("代理与应用设置", proxy_rows)
         self.scroll_layout.addStretch(1)
+
+    def _diagnostics_failed(self, message):
+        self._checking = False
+        self.refresh_btn.setEnabled(True)
+        self.summary_label.setText('检查失败，请重试')
+        if self.isVisible():
+            InfoBar.error('环境诊断失败', message, parent=self)
 
     def copy_result(self):
         lines = [self.summary_label.text()]

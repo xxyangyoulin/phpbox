@@ -50,10 +50,11 @@ def main():
         os.chdir(Path(args.directory).expanduser())
 
     from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import Qt, QSettings, qInstallMessageHandler
+    from PyQt6.QtCore import Qt, qInstallMessageHandler
     from PyQt6.QtGui import QIcon
     from ui.main_window import MainWindow
-    from ui.styles import apply_theme, ThemeWatcher
+    from ui.styles import apply_theme_preference
+    from core.settings import Settings
     from ui.single_instance import SingleInstance
 
     qInstallMessageHandler(_qt_message_handler)
@@ -77,26 +78,7 @@ def main():
         return
     app.aboutToQuit.connect(instance.close)
 
-    # 加载设置
-    settings = QSettings()
-    theme_setting = settings.value("theme", "auto")
-
-    # 创建主题监听器（仅在 auto 模式下启用）
-    theme_watcher = None
-
-    def on_theme_changed(new_theme: str):
-        """主题变化回调"""
-        apply_theme(app, new_theme)
-
-    if theme_setting == "auto":
-        theme_watcher = ThemeWatcher()
-        theme_watcher.themeChanged.connect(on_theme_changed)
-        theme = theme_watcher.current_theme()
-    else:
-        theme = theme_setting
-
-    # 应用 Fluent 主题
-    apply_theme(app, theme)
+    apply_theme_preference(app, Settings().get_theme())
 
     # 检查 Docker 是否可用
     docker_ready = True
@@ -138,8 +120,8 @@ def main():
     result = app.exec()
 
     # 清理
-    if theme_watcher:
-        theme_watcher.stop()
+    if getattr(app, 'theme_watcher', None) is not None:
+        app.theme_watcher.stop()
 
     if window.restart_args is not None:
         # aboutToQuit 已释放单实例地址；替换当前进程，避免新旧实例竞争。

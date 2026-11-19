@@ -122,48 +122,8 @@ build_deb() {
         build_bin
     fi
 
-    DEB_DIR="deb_package"
-    VERSION="2.1.2"
-    ARCH="amd64"
-
-    rm -rf "$DEB_DIR"
-    mkdir -p "$DEB_DIR/DEBIAN"
-    mkdir -p "$DEB_DIR/usr/bin"
-    mkdir -p "$DEB_DIR/usr/share/applications"
-
-    # 控制文件
-    cat > "$DEB_DIR/DEBIAN/control" << EOF
-Package: phpbox
-Version: $VERSION
-Section: devel
-Priority: optional
-Architecture: $ARCH
-Depends: docker-ce | docker.io
-Maintainer: Your Name <your@email.com>
-Description: PHP Development Environment Manager
- A GUI application to manage PHP Docker development environments.
- Supports multiple PHP versions, extensions, and projects.
-EOF
-
-    # 复制文件
-    mkdir -p "$DEB_DIR/opt/phpbox"
-    cp -r dist/phpbox/. "$DEB_DIR/opt/phpbox/"
-    cat > "$DEB_DIR/usr/bin/phpbox" <<'EOF'
-#!/bin/sh
-exec /opt/phpbox/phpbox "$@"
-EOF
-    chmod 755 "$DEB_DIR/usr/bin/phpbox"
-    ln -s phpbox "$DEB_DIR/usr/bin/pbox"
-    cp phpbox.desktop "$DEB_DIR/usr/share/applications/"
-    mkdir -p "$DEB_DIR/usr/share/icons/hicolor/256x256/apps"
-    cp resources/icons/phpbox-256.png "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/phpbox.png"
-    sh resources/install-cli.sh "$DEB_DIR/usr"
-
-    # 构建
-    dpkg-deb --root-owner-group -Zgzip --build "$DEB_DIR" "dist/phpbox_${VERSION}_${ARCH}.deb"
-
-    rm -rf "$DEB_DIR"
-    echo ">>> .deb 构建完成: dist/phpbox_${VERSION}_${ARCH}.deb"
+    VERSION=$("$BUILD_PYTHON" -c 'from core.version import VERSION; print(VERSION)')
+    sh resources/build-deb.sh "$VERSION"
 }
 
 # 解析参数

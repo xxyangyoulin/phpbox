@@ -15,7 +15,7 @@ from ui.updates import UpdateChecker
 from core.settings import Settings
 from core.proxy import detect_system_proxy, sync_all_projects_proxy, validate_proxy_url
 from ui.dialogs.environment_diagnostics import EnvironmentDiagnosticsDialog
-from ui.styles import SurfaceCard, FluentDialog, apply_theme
+from ui.styles import SurfaceCard, FluentDialog, apply_theme_preference
 
 
 class SettingsDialog(FluentDialog):
@@ -246,11 +246,7 @@ class SettingsDialog(FluentDialog):
         self.settings.set_theme(theme)
 
         app = QApplication.instance()
-        if theme == "auto":
-            from ui.styles import detect_system_theme
-            apply_theme(app, detect_system_theme())
-        else:
-            apply_theme(app, theme)
+        apply_theme_preference(app, theme)
 
         self.save_btn.setEnabled(False)
         self.operation_worker = OperationWorker(lambda: sync_all_projects_proxy(current_proxy))

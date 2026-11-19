@@ -172,18 +172,38 @@ class ThemeWatcher(QObject):
         self._timer.stop()
 
 
+def apply_theme_preference(app, theme):
+    watcher = getattr(app, 'theme_watcher', None)
+    if watcher is not None:
+        watcher.stop()
+        watcher.deleteLater()
+        app.theme_watcher = None
+    if theme == 'auto':
+        watcher = ThemeWatcher(app)
+        watcher.themeChanged.connect(lambda value: apply_theme(app, value))
+        app.theme_watcher = watcher
+        theme = watcher.current_theme()
+    apply_theme(app, theme)
+
+
 class FluentDialog(QDialog):
     """自动适应主题的对话框基类"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._close_timer = QTimer(self)
+        self._close_timer.setInterval(100)
+        self._close_timer.timeout.connect(self._finish_reject)
+        self._closing_workers = []
         CustomStyleSheet(self).setCustomStyleSheet(
             "QDialog { background-color: #f3f3f3; }",
             "QDialog { background-color: #202020; }",
         ).apply(self)
 
     def reject(self):
-        from PyQt6.QtCore import QTimer
+        if self._close_timer.isActive():
+            self._finish_reject()
+            return
         active = []
         for name in ("worker", "build_worker", "operation_worker", "prepare_worker", "log_thread"):
             worker = getattr(self, name, None)
@@ -194,12 +214,34 @@ class FluentDialog(QDialog):
                 except RuntimeError:
                     pass
         if active:
+            self._closing_workers = active
+            self._close_title = self.windowTitle()
+            self.setWindowTitle(self._close_title + " · 正在取消，等待操作收尾…")
             for worker in active:
                 if hasattr(worker, "stop"):
                     worker.stop()
-            QTimer.singleShot(100, self.reject)
+            self._close_timer.start()
             return
         super().reject()
+
+    def _finish_reject(self):
+        for worker in self._closing_workers:
+            try:
+                if worker.isRunning():
+                    return
+            except RuntimeError:
+                pass
+        self._close_timer.stop()
+        self._closing_workers = []
+        self.setWindowTitle(self._close_title)
+        super().reject()
+
+    def done(self, result):
+        if self._close_timer.isActive():
+            self._close_timer.stop()
+            self._closing_workers = []
+            self.setWindowTitle(self._close_title)
+        super().done(result)
 
     def closeEvent(self, event):
         self.reject()

@@ -49,11 +49,14 @@ def run_process(command, cwd=None, env=None, cancel=None, on_output=None, timeou
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
-            while selector.get_map():
+            while selector.get_map() or process.poll() is None:
                 if cancel is not None and cancel.is_set():
                     raise InterruptedError("操作已取消")
                 if time.monotonic() >= deadline:
                     raise TimeoutError("命令执行超时")
+                if not selector.get_map():
+                    time.sleep(0.1)
+                    continue
                 for key, _ in selector.select(0.1):
                     data = os.read(key.fd, 65536)
                     if not data:
